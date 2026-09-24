@@ -1,0 +1,8 @@
+2026-09-23 13:28:44,127 [INFO] __main__: Aplicação iniciada.
+2026-09-23 13:29:28,334 [ERROR] interface: Falha ao importar 'XLSX': Arquivo não encontrado: XLSX
+2026-09-23 13:29:48,161 [INFO] __main__: Aplicação iniciada.
+2026-09-23 13:29:53,716 [ERROR] interface: Falha ao importar 'xlsx': Arquivo não encontrado: xlsx
+2026-09-23 13:30:32,489 [INFO] __main__: Aplicação iniciada.
+2026-09-23 14:04:06,750 [INFO] __main__: Aplicação iniciada.
+2026-09-23 14:10:12,587 [INFO] exportador: Relatório gerado em: Dataset_Financas_Treinamento.xlsx
+2026-09-23 14:19:30,024 [INFO] exportador: Relatório gerado em: BATATA.xlsx
