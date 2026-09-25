@@ -32,6 +32,15 @@ def sanitizar_valor_formula(valor: Any) -> Any:
     return valor
 
 
+def eh_coluna_texto(serie: pd.Series) -> bool:
+    """Indica se a coluna guarda texto.
+
+    No pandas 2 o texto fica em colunas ``object``; no pandas 3 ele usa o tipo
+    ``str`` (``pd.StringDtype``). As duas formas precisam ser reconhecidas.
+    """
+    return pd.api.types.is_object_dtype(serie) or isinstance(serie.dtype, pd.StringDtype)
+
+
 def sanitizar_dataframe_formulas(df: pd.DataFrame) -> pd.DataFrame:
     """Aplica :func:`sanitizar_valor_formula` a todas as colunas textuais de um DataFrame."""
     df_seguro = df.copy()
@@ -39,6 +48,66 @@ def sanitizar_dataframe_formulas(df: pd.DataFrame) -> pd.DataFrame:
         if df_seguro[coluna].dtype == object:
             df_seguro[coluna] = df_seguro[coluna].map(sanitizar_valor_formula)
     return df_seguro
+
+
+_PADRAO_NUMERO_MILHAR_BR = re.compile(r"^[+-]?\d{1,3}(\.\d{3})+(,\d+)?$")
+_PADRAO_NUMERO_DECIMAL_BR = re.compile(r"^[+-]?\d*,\d+$")
+
+
+def converter_numero_br(valor: Any) -> float:
+    """Converte um número digitado no formato brasileiro ou internacional para ``float``.
+
+    Aceita ``10,5``, ``1.234,56``, ``1.000`` (milhar), ``10.5`` e ``1234``.
+    Levanta ``ValueError`` quando o valor não é um número.
+    """
+    if isinstance(valor, (int, float, np.integer, np.floating)) and not isinstance(valor, bool):
+        return float(valor)
+    texto = str(valor).strip().replace(" ", "")
+    if _PADRAO_NUMERO_MILHAR_BR.match(texto):
+        texto = texto.replace(".", "").replace(",", ".")
+    elif _PADRAO_NUMERO_DECIMAL_BR.match(texto):
+        texto = texto.replace(",", ".")
+    return float(texto)
+
+
+def serie_numeros_br(serie: pd.Series) -> pd.Series | None:
+    """Converte uma coluna de texto com números no formato brasileiro para numérica.
+
+    Só converte quando todos os valores preenchidos são números em formato
+    brasileiro (``1.234,56``, ``10,50``); caso contrário retorna ``None``.
+    """
+    textos = serie.dropna().astype(str).str.strip()
+    textos = textos[textos != ""]
+    if textos.empty:
+        return None
+    eh_br = textos.str.match(_PADRAO_NUMERO_MILHAR_BR) | textos.str.match(_PADRAO_NUMERO_DECIMAL_BR)
+    eh_inteiro = textos.str.match(r"^[+-]?\d+$")
+    if not (eh_br | eh_inteiro).all() or not eh_br.any():
+        return None
+    convertida = serie.map(lambda v: converter_numero_br(v) if pd.notna(v) and str(v).strip() else np.nan)
+    return convertida.astype(float)
+
+
+_PADRAO_DATA_ANO_PRIMEIRO = r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T].*)?$"
+
+
+def converter_datas_br(valores: Any) -> Any:
+    """Converte datas priorizando o formato brasileiro (dia/mês/ano).
+
+    Datas que começam pelo ano (``2026-02-01``) são sempre lidas como
+    ano-mês-dia: no pandas 3 o ``dayfirst=True`` também inverteria essas.
+    Valores inválidos viram ``NaT``.
+    """
+    if not isinstance(valores, (pd.Series, pd.Index, list, tuple, np.ndarray)):
+        return converter_datas_br(pd.Series([valores])).iloc[0]
+    serie = valores if isinstance(valores, pd.Series) else pd.Series(list(valores))
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        return serie
+    textos = serie.where(serie.notna(), "").astype(str).str.strip()
+    ano_primeiro = textos.str.match(_PADRAO_DATA_ANO_PRIMEIRO)
+    iso = pd.to_datetime(textos.where(ano_primeiro).str.replace("/", "-"), errors="coerce", format="ISO8601")
+    outros = pd.to_datetime(serie.where(~ano_primeiro), errors="coerce", format="mixed", dayfirst=True)
+    return iso.where(ano_primeiro, outros)
 
 
 def curinga_para_regex(padrao: str) -> str:
