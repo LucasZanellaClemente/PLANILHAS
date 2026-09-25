@@ -1475,7 +1475,7 @@ def handler_salvar(sessao: Sessao) -> None:
     print("  2. Completo: inclui também catálogo, qualidade e todas as abas originais")
     completo = ler_inteiro("Tipo de relatório: ", minimo=1, maximo=2, padrao=1) == 2
     salvar_copias = confirmar(
-        "Salvar também uma cópia das planilhas importadas com o resultado final (arquivo_final.xlsx)?", padrao=True
+        "Salvar também uma cópia das planilhas importadas já atualizadas (arquivo_planilha_atualizada.xlsx)?", padrao=True
     )
     caminho = Path(ler_texto("Nome do arquivo de saída: ", padrao="relatorio.xlsx"))
     if not caminho.suffix:
@@ -1491,17 +1491,19 @@ def handler_salvar(sessao: Sessao) -> None:
         logger.exception("Falha ao gerar relatório")
         return
     print(f"Relatório salvo em: {caminho_final.resolve()}")
+    if any(exportador._dataset_foi_alterado(d) for d in sessao.listar_datasets()):
+        print("A aba 'Planilha Atualizada' do relatório mostra como a planilha ficou depois das ações.")
     if salvar_copias:
         try:
             copias = exportador.gerar_copias_finais(sessao, caminho_final.parent)
         except Exception as exc:  # noqa: BLE001 - o relatório já foi salvo; só a cópia falhou
-            print(f"Erro ao salvar a cópia com o resultado final: {exc}")
+            print(f"Erro ao salvar a planilha atualizada: {exc}")
             logger.exception("Falha ao gerar cópia final")
             copias = []
         for copia in copias:
-            print(f"Cópia com o resultado final salva em: {copia.resolve()}")
+            print(f"Planilha atualizada salva em: {copia.resolve()}")
         if not copias:
-            print("Nenhuma planilha importada foi alterada; não há cópia com resultado final para salvar.")
+            print("Nenhuma planilha importada foi alterada; não há planilha atualizada para salvar.")
     print("\nResumo do que foi feito:")
     for _, linha in exportador.montar_resumo_sessao(sessao).iterrows():
         print(f"  {linha['Item']}: {linha['Valor']}")

@@ -112,17 +112,19 @@ Resumo do que foi feito:
 ```
 
 O relatório **resumido** (padrão) traz a aba `Resumo`, a aba
-`Operacoes_Executadas` (cada opção usada, o que foi feito, o resultado e as
-linhas antes e depois), uma aba com a versão final de cada dataset alterado ou
-criado e uma aba por resultado salvo (tabelas dinâmicas, PROCH, SOMASE etc.).
+a aba **`Planilha Atualizada`** (a planilha como ficou depois das ações, com
+as colunas do PROCV, SE etc.; com mais de uma planilha alterada, uma aba
+`Planilha Atualizada - <nome>` para cada), a aba `Operacoes_Executadas` (cada
+opção usada, o que foi feito, o resultado e as linhas antes e depois) e uma aba
+por resultado salvo (tabelas dinâmicas, PROCH, SOMASE etc.).
 
-O relatório **completo** traz também `Catalogo_Colunas`, `Qualidade_Dados`,
+O relatório **completo** traz também a `Planilha Atualizada`, `Catalogo_Colunas`, `Qualidade_Dados`,
 `Historico` e, para todos os datasets, a versão original (`<nome>_orig`) e a
 alterada (`<nome>_alt`).
 
-Nos dois tipos, a opção 30 pergunta também se deve salvar uma **cópia com o
-resultado final** (padrão: sim). Para cada planilha importada que foi alterada,
-ela grava `<nome_do_arquivo>_final.xlsx` na mesma pasta do relatório, com as
+Nos dois tipos, a opção 30 pergunta também se deve salvar uma **cópia das
+planilhas já atualizadas** (padrão: sim). Para cada planilha importada que foi
+alterada, ela grava `<nome_do_arquivo>_planilha_atualizada.xlsx` na mesma pasta do relatório, com as
 mesmas abas e na mesma ordem do arquivo original, mas com os dados como
 ficaram depois das operações (colunas do PROCV, SE, filtros etc.). O arquivo
 original não é modificado.

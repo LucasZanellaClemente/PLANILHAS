@@ -289,25 +289,41 @@ def montar_resumo_sessao(sessao: Sessao) -> pd.DataFrame:
     return pd.DataFrame(metricas, columns=["Item", "Valor"])
 
 
+NOME_ABA_ATUALIZADA = "Planilha Atualizada"
+
+
+def _escrever_planilhas_atualizadas(construtor: "_ConstrutorRelatorio", sessao: Sessao) -> list[str]:
+    """Escreve a aba "Planilha Atualizada": cada dataset alterado ou criado, como ficou no fim.
+
+    Com um único dataset alterado a aba se chama exatamente "Planilha Atualizada";
+    com vários, cada uma leva o nome de origem: "Planilha Atualizada - Vendas".
+    """
+    alterados = [d for d in sessao.listar_datasets() if _dataset_foi_alterado(d)]
+    if len(alterados) == 1:
+        return [construtor.escrever_dataframe(NOME_ABA_ATUALIZADA, alterados[0].df)]
+    bases = [_nome_base_dataset(d) for d in alterados]
+    nomes = []
+    for dataset, nome_base in zip(alterados, bases):
+        if bases.count(nome_base) > 1:
+            nome_base = f"{dataset.id}_{nome_base}"
+        nomes.append(construtor.escrever_dataframe(f"{NOME_ABA_ATUALIZADA} - {nome_base}"[:31], dataset.df))
+    return nomes
+
+
 def _gerar_relatorio_resumido(sessao: Sessao, caminho_saida: Path) -> Path:
     """Relatório prático: resumo, opções executadas e só os dados que mudaram ou foram calculados."""
     with pd.ExcelWriter(caminho_saida, engine="xlsxwriter") as writer:
         construtor = _ConstrutorRelatorio(writer)
         construtor.escrever_dataframe("Resumo", montar_resumo_sessao(sessao), incluir_tabela_excel=False)
+        _escrever_planilhas_atualizadas(construtor, sessao)
         construtor.escrever_dataframe("Operacoes_Executadas", montar_operacoes_executadas(sessao))
-        alterados = [d for d in sessao.listar_datasets() if _dataset_foi_alterado(d)]
-        bases = [_nome_base_dataset(d) for d in alterados]
-        for dataset, nome_base in zip(alterados, bases):
-            if bases.count(nome_base) > 1:
-                nome_base = f"{dataset.id}_{nome_base}"
-            construtor.escrever_dataframe(nome_base, dataset.df)
         for nome_resultado, df_resultado in sessao.resultados.items():
             construtor.escrever_dataframe(nome_resultado, df_resultado)
     logger.info("Relatório resumido gerado em: %s", caminho_saida)
     return caminho_saida
 
 
-def gerar_copias_finais(sessao: Sessao, pasta: Path, sufixo: str = "_final") -> list[Path]:
+def gerar_copias_finais(sessao: Sessao, pasta: Path, sufixo: str = "_planilha_atualizada") -> list[Path]:
     """Salva, para cada arquivo importado que foi alterado, uma cópia com o resultado final.
 
     A cópia tem as mesmas abas do arquivo importado, na mesma ordem e com os
@@ -348,6 +364,7 @@ def gerar_relatorio(sessao: Sessao, caminho_saida: Path, completo: bool = False)
         construtor = _ConstrutorRelatorio(writer)
 
         construtor.escrever_dataframe("Resumo", _montar_resumo_geral(sessao), incluir_tabela_excel=False)
+        _escrever_planilhas_atualizadas(construtor, sessao)
         construtor.escrever_dataframe("Catalogo_Colunas", _montar_catalogo_colunas_geral(sessao))
         construtor.escrever_dataframe("Qualidade_Dados", _montar_qualidade_geral(sessao))
         construtor.escrever_dataframe("Historico", _montar_historico(sessao))

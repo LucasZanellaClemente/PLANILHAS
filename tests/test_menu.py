@@ -187,7 +187,7 @@ def c30_completo(s, o):
     arquivo = TMP / "relatorio_completo.xlsx"
     wb = openpyxl.load_workbook(arquivo)
     nomes = wb.sheetnames
-    for obrig in ["Resumo", "Catalogo_Colunas", "Qualidade_Dados", "Historico", "Vendas_orig", "Vendas_alt", "atingimento_orig", "Vendas_somase"]:
+    for obrig in ["Resumo", "Planilha Atualizada", "Catalogo_Colunas", "Qualidade_Dados", "Historico", "Vendas_orig", "Vendas_alt", "atingimento_orig", "Vendas_somase"]:
         assert obrig in nomes, f"aba {obrig} ausente: {nomes}"
     alt = pd.read_excel(arquivo, "Vendas_alt")
     igual(alt.Valor_Total.sum(), 90000)
@@ -196,19 +196,20 @@ def c30_completo(s, o):
     igual(pd.read_excel(arquivo, "atingimento_orig").Valor.tolist()[0], 1500)
     igual(pd.read_excel(arquivo, "Vendas_somase").Resultado[0], 9000)
     igual(sum(1 for ws in wb.worksheets for r in ws.iter_rows() for c in r if c.data_type == "f"), 0, "fórmulas")
-    assert "Cópia com o resultado final" not in o, "cópia gerada mesmo respondendo não"
+    assert "Planilha atualizada salva em" not in o, "cópia gerada mesmo respondendo não"
 
 
 def c30_resumido(s, o):
     arquivo = TMP / "relatorio.xlsx"
     nomes = openpyxl.load_workbook(arquivo).sheetnames
-    igual(nomes, ["Resumo", "Operacoes_Executadas", "Vendas", "Vendas_somase"])
+    igual(nomes, ["Resumo", "Planilha Atualizada", "Operacoes_Executadas", "Vendas_somase"])
     ops = pd.read_excel(arquivo, "Operacoes_Executadas")
     igual(ops["Opção executada"].tolist(), ["SOMASE", "SE"])
     assert str(ops["Resultado"][0]).startswith("9000"), ops["Resultado"][0]
     assert "Valor_Total >= 1000" in ops["O que foi feito"][1]
     igual(ops["Linhas"][1], "120 → 120")
-    vendas = pd.read_excel(arquivo, "Vendas")
+    vendas = pd.read_excel(arquivo, "Planilha Atualizada")
+    igual(len(vendas), len(V))
     igual(vendas.Bonus.sum(), 100 * int((V.Valor_Total >= 1000).sum()))
     resumo = dict(pd.read_excel(arquivo, "Resumo").values)
     igual(int(resumo["Operações executadas"]), 2)
@@ -216,9 +217,9 @@ def c30_resumido(s, o):
     assert "Resumo do que foi feito" in o and "1. SOMASE" in o
     # Cópia da planilha importada com o resultado final: mesmas abas, na mesma ordem.
     arquivo_origem = s.listar_datasets()[0].arquivo
-    copia = TMP / f"{Path(arquivo_origem).stem}_final.xlsx"
+    copia = TMP / f"{Path(arquivo_origem).stem}_planilha_atualizada.xlsx"
     assert copia.exists(), o
-    assert "Cópia com o resultado final salva em" in o
+    assert "Planilha atualizada salva em" in o and "aba 'Planilha Atualizada'" in o
     abas_origem = [str(d.aba) for d in s.listar_datasets() if d.origem == "importado" and d.arquivo == arquivo_origem]
     igual(openpyxl.load_workbook(copia).sheetnames, abas_origem)
     final = pd.read_excel(copia, "Vendas")
@@ -226,7 +227,7 @@ def c30_resumido(s, o):
     igual(final.Bonus.sum(), 100 * int((V.Valor_Total >= 1000).sum()))
     assert pd.api.types.is_numeric_dtype(final.Bonus), "Bonus gravado como texto"
     # O CSV importado não foi alterado, então não ganha cópia.
-    igual(sorted(p.name for p in TMP.glob("*_final.xlsx")), [copia.name])
+    igual(sorted(p.name for p in TMP.glob("*_planilha_atualizada.xlsx")), [copia.name])
 
 
 caso(30, "Salvar relatório resumido (padrão) e reler o .xlsx", ["", "", TMP / "relatorio.xlsx"], c30_resumido, sessao=s30())
