@@ -32,11 +32,20 @@ def sanitizar_valor_formula(valor: Any) -> Any:
     return valor
 
 
+def eh_coluna_texto(serie: pd.Series) -> bool:
+    """Indica se a coluna guarda texto.
+
+    No pandas 2 o texto fica em colunas ``object``; no pandas 3 ele usa o tipo
+    ``str`` (``pd.StringDtype``). As duas formas precisam ser reconhecidas.
+    """
+    return pd.api.types.is_object_dtype(serie) or isinstance(serie.dtype, pd.StringDtype)
+
+
 def sanitizar_dataframe_formulas(df: pd.DataFrame) -> pd.DataFrame:
     """Aplica :func:`sanitizar_valor_formula` a todas as colunas textuais de um DataFrame."""
     df_seguro = df.copy()
     for coluna in df_seguro.columns:
-        if df_seguro[coluna].dtype == object:
+        if eh_coluna_texto(df_seguro[coluna]):
             df_seguro[coluna] = df_seguro[coluna].map(sanitizar_valor_formula)
     return df_seguro
 
