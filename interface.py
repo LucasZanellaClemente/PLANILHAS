@@ -1022,8 +1022,8 @@ def handler_procx(sessao: Sessao) -> None:
     valor_nao_encontrado = None
     if modo == "exata":
         ocorrencia = ler_texto("Em caso de múltiplas ocorrências, usar (primeira/ultima): ", padrao="primeira")
-        if confirmar("Deseja definir um valor para quando não houver correspondência?", padrao=False):
-            valor_nao_encontrado = ler_texto("Valor para 'não encontrado': ")
+    if confirmar("Deseja definir um valor para quando não houver correspondência?", padrao=False):
+        valor_nao_encontrado = ler_texto("Valor para 'não encontrado': ")
     try:
         resultado = operacoes.executar_procx(
             principal.df, consulta.df, coluna_busca_principal, coluna_busca_consulta, colunas_retorno, modo, ocorrencia, valor_nao_encontrado
@@ -1186,7 +1186,7 @@ def handler_se(sessao: Sessao) -> None:
     if dataset is None:
         return
     df = dataset.df
-    condicao_texto = ler_texto("Condição (ex.: idade >= 18): ")
+    condicao_texto = ler_texto("Condição (ex.: idade >= 18 and cidade == \"Sul\"): ")
     try:
         condicao = avaliar_condicao_segura(condicao_texto, df)
     except ErroExpressaoInsegura as exc:
