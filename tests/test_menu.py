@@ -103,7 +103,7 @@ caso(6, "Coluna calculada: diferença de datas (dias)", [VEN, "6", "Dias", cv("D
 caso(6, "Coluna calculada: valor fixo 0,5", [VEN, "7", "Fixo", "0,5", "s"], lambda s, o: igual(ds(s, VEN).Fixo.sum(), 60.0))
 caso(6, "Coluna calculada: expressão", [VEN, "8", "Lucro", "Valor_Total - Quantidade * 10", "s"], lambda s, o: igual(ds(s, VEN).Lucro.sum(), 90000 - V.Quantidade.sum() * 10))
 caso(7, "Matemática: dividir por 1.000", [VEN, cv("Valor_Total"), "4", "1.000", "Mil", "s"], lambda s, o: igual(ds(s, VEN).Mil.sum(), 90.0))
-caso(7, "Matemática: arredondar Valor_Total/7 com 2 casas", [CSVID, col(ds(base, CSVID), "Atingimento"), "8", "2", "Arr", "s"],
+caso(7, "Matemática: arredondar Atingimento com 2 casas", [CSVID, col(ds(base, CSVID), "Atingimento"), "8", "2", "Arr", "s"],
      lambda s, o: igual(ds(s, CSVID).Arr.tolist(), [1.15, 0.95, 0.5, 1.2]))
 caso(8, "Texto: esquerda 3", [VEN, "2", cv("Produto"), "P3", "3", "s"], lambda s, o: igual(ds(s, VEN).P3[0], "Cop"))
 caso(8, "Texto: separar Data por '-'", [VEN, "11", cv("Data"), "-", "s"], lambda s, o: igual(ds(s, VEN)["Data_parte_2"][0], "01"))
