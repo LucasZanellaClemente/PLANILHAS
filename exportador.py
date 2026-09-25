@@ -12,6 +12,7 @@ tabelas nativas do Excel.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -121,7 +122,8 @@ class _ConstrutorRelatorio:
                 {
                     "columns": colunas_tabela,
                     "style": "Table Style Medium 9",
-                    "name": f"Tbl_{nome_aba.replace(' ', '_')[:200]}",
+                    # Nome de tabela do Excel só aceita letras, números e "_" (a aba "LEIA-ME" falhava).
+                    "name": f"Tbl_{re.sub(r'[^0-9A-Za-z_]', '_', nome_aba)[:200]}",
                 },
             )
         except Exception as exc:  # noqa: BLE001 - formatação de tabela é best-effort

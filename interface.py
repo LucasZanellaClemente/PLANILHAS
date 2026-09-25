@@ -47,7 +47,7 @@ except ImportError:  # a biblioteca é opcional; há um modo de exibição alter
 # ---------------------------------------------------------------------------
 
 
-def ler_texto(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = None) -> str:
+def ler_texto(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = None, manter_espacos: bool = False) -> str:
     """Lê uma string do usuário, repetindo a pergunta enquanto o campo obrigatório estiver vazio.
 
     Propositalmente não trata ``EOFError``: se a entrada padrão terminar
@@ -56,7 +56,8 @@ def ler_texto(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = N
     em um laço infinito pedindo entradas que nunca chegarão.
     """
     while True:
-        bruto = input(mensagem).strip()
+        # Separadores e textos a substituir podem ser um espaço: aí não se remove nada.
+        bruto = input(mensagem) if manter_espacos else input(mensagem).strip()
         if not bruto and padrao is not None:
             return padrao
         if not bruto and obrigatorio:
@@ -168,6 +169,15 @@ def selecionar_colunas_multiplas(df: pd.DataFrame, mensagem: str = "Escolha as c
         else:
             print(f"Índice fora do intervalo ignorado: {indice}")
     return colunas
+
+
+def _nome_curto(dataset: Dataset) -> str:
+    """Nome curto para sugerir nomes de resultado: a aba (Excel) ou o nome do arquivo (CSV).
+
+    As abas do Excel têm no máximo 31 caracteres; com o nome do arquivo na frente
+    o sufixo (``_somase``, ``_pivot``...) era cortado e os resultados ficavam sem nome útil.
+    """
+    return str(dataset.aba) if dataset.aba else dataset.nome
 
 
 def selecionar_dataset(sessao: Sessao, mensagem: str = "Escolha o dataset pelo número") -> Optional[Dataset]:
@@ -647,7 +657,7 @@ def handler_coluna_calculada(sessao: Sessao) -> None:
             parametros = f"condicao={condicao_texto}, verdadeiro={valor_v}, falso={valor_f}"
         elif escolha == "4":
             colunas = selecionar_colunas_multiplas(df, "Colunas a concatenar")
-            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="")
+            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="", manter_espacos=True)
             resultado = operacoes.criar_coluna_concatenacao(df, nova_coluna, colunas, separador)
             parametros = f"colunas={colunas}, separador='{separador}'"
         elif escolha == "5":
@@ -754,14 +764,14 @@ def handler_texto(sessao: Sessao) -> None:
     try:
         if operacao_texto == "concatenar":
             colunas = selecionar_colunas_multiplas(df, "Colunas a concatenar")
-            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="")
+            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="", manter_espacos=True)
             nova_coluna = ler_texto("Nome da nova coluna: ")
             resultado = df.copy()
             resultado[nova_coluna] = operacoes.texto_concatenar(df, colunas, separador)
             parametros = f"colunas={colunas}, separador='{separador}'"
         elif operacao_texto == "separar":
             coluna = selecionar_coluna(df, "Coluna a separar")
-            delimitador = ler_texto("Delimitador: ")
+            delimitador = ler_texto("Delimitador: ", manter_espacos=True)
             expandido = operacoes.texto_separar(df[coluna], delimitador)
             expandido.columns = [f"{coluna}_{c}" for c in expandido.columns]
             resultado = pd.concat([df.reset_index(drop=True), expandido.reset_index(drop=True)], axis=1)
@@ -778,12 +788,12 @@ def handler_texto(sessao: Sessao) -> None:
                 serie = operacoes.texto_direita(df[coluna], quantidade)
                 parametros = f"coluna={coluna}, n={quantidade}"
             elif operacao_texto == "localizar":
-                subtexto = ler_texto("Texto a localizar: ")
+                subtexto = ler_texto("Texto a localizar: ", manter_espacos=True)
                 serie = operacoes.texto_localizar(df[coluna], subtexto)
                 parametros = f"coluna={coluna}, subtexto='{subtexto}'"
             elif operacao_texto == "substituir":
-                antigo = ler_texto("Texto a substituir: ")
-                novo = ler_texto("Novo texto: ", obrigatorio=False, padrao="")
+                antigo = ler_texto("Texto a substituir: ", manter_espacos=True)
+                novo = ler_texto("Novo texto: ", obrigatorio=False, padrao="", manter_espacos=True)
                 serie = operacoes.texto_substituir(df[coluna], antigo, novo)
                 parametros = f"coluna={coluna}, antigo='{antigo}', novo='{novo}'"
             elif operacao_texto == "remover_espacos":
@@ -908,7 +918,7 @@ def handler_agrupar(sessao: Sessao) -> None:
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
-    nome_sugerido = ler_texto("Nome para o novo dataset resumido: ", padrao=f"{dataset.nome}_resumo")
+    nome_sugerido = ler_texto("Nome para o novo dataset resumido: ", padrao=f"{_nome_curto(dataset)}_resumo")
     criar_dataset_com_confirmacao(
         sessao, nome_sugerido, resultado, "Agrupar e resumir", f"grupo={colunas_grupo}, agregacoes={agregacoes}", dataset.identificador_exibicao()
     )
@@ -941,7 +951,7 @@ def handler_pivot(sessao: Sessao) -> None:
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
-    nome_resultado = ler_texto("Nome para esta tabela dinâmica: ", padrao=f"{dataset.nome}_pivot")
+    nome_resultado = ler_texto("Nome para esta tabela dinâmica: ", padrao=f"{_nome_curto(dataset)}_pivot")
     salvar_resultado_com_confirmacao(
         sessao,
         nome_resultado,
@@ -1002,7 +1012,7 @@ def handler_proch(sessao: Sessao) -> None:
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_proch")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_proch")
     salvar_resultado_com_confirmacao(
         sessao,
         nome_resultado,
@@ -1073,7 +1083,7 @@ def handler_somase(sessao: Sessao) -> None:
         return
     print(f"\nResultado SOMASE: {valor}")
     resultado_df = pd.DataFrame([{"Função": "SOMASE", "Coluna soma": coluna_soma, "Critério": f"{coluna_criterio} {criterio}", "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_somase")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_somase")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "SOMASE", f"coluna_soma={coluna_soma}, coluna_criterio={coluna_criterio}, criterio={criterio}",
         dataset.identificador_exibicao(),
@@ -1098,7 +1108,7 @@ def handler_somases(sessao: Sessao) -> None:
         return
     print(f"\nResultado SOMASES: {valor}")
     resultado_df = pd.DataFrame([{"Função": "SOMASES", "Coluna soma": coluna_soma, "Critérios": str(pares), "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_somases")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_somases")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "SOMASES", f"coluna_soma={coluna_soma}, criterios={pares}", dataset.identificador_exibicao()
     )
@@ -1119,7 +1129,7 @@ def handler_contse(sessao: Sessao) -> None:
         return
     print(f"\nResultado CONT.SE: {valor}")
     resultado_df = pd.DataFrame([{"Função": "CONT.SE", "Critério": f"{coluna_criterio} {criterio}", "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_contse")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_contse")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "CONT.SE", f"coluna_criterio={coluna_criterio}, criterio={criterio}", dataset.identificador_exibicao()
     )
@@ -1142,7 +1152,7 @@ def handler_contses(sessao: Sessao) -> None:
         return
     print(f"\nResultado CONT.SES: {valor}")
     resultado_df = pd.DataFrame([{"Função": "CONT.SES", "Critérios": str(pares), "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_contses")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_contses")
     salvar_resultado_com_confirmacao(sessao, nome_resultado, resultado_df, "CONT.SES", f"criterios={pares}", dataset.identificador_exibicao())
 
 
@@ -1162,7 +1172,7 @@ def handler_mediase(sessao: Sessao) -> None:
         return
     print(f"\nResultado MÉDIASE: {valor}")
     resultado_df = pd.DataFrame([{"Função": "MÉDIASE", "Coluna média": coluna_media, "Critério": f"{coluna_criterio} {criterio}", "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_mediase")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_mediase")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "MÉDIASE", f"coluna_media={coluna_media}, coluna_criterio={coluna_criterio}, criterio={criterio}",
         dataset.identificador_exibicao(),
@@ -1187,7 +1197,7 @@ def handler_mediases(sessao: Sessao) -> None:
         return
     print(f"\nResultado MÉDIASES: {valor}")
     resultado_df = pd.DataFrame([{"Função": "MÉDIASES", "Coluna média": coluna_media, "Critérios": str(pares), "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_mediases")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_mediases")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "MÉDIASES", f"coluna_media={coluna_media}, criterios={pares}", dataset.identificador_exibicao()
     )

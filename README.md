@@ -52,7 +52,8 @@ python main.py
 
 Os testes conferem as funções contra a aba **Gabarito** de
 `Dataset_Financas_Complementar.xlsx` e contra casos que já deram valor errado
-(datas, números no formato brasileiro, PROCV, tabela dinâmica, arredondamento):
+(datas, números no formato brasileiro, PROCV, tabela dinâmica, arredondamento)
+e executam as opções 1 a 30 do menu com entradas simuladas:
 
 ```bash
 pip install -r requirements-dev.txt
