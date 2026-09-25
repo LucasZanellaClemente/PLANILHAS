@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
-from utils import ErroOperacao, curinga_para_regex
+from utils import ErroOperacao, converter_datas_br, converter_numero_br, curinga_para_regex
 
 # ---------------------------------------------------------------------------
 # Utilidades de validação
@@ -84,6 +84,16 @@ class Criterio:
     valor2: Any = None
 
 
+def _normalizar_texto(valor: Any) -> str:
+    """Normaliza um texto para comparação: sem espaços nas pontas e sem diferenciar maiúsculas."""
+    return str(valor).strip().casefold()
+
+
+def _normalizar_serie_texto(serie: pd.Series) -> pd.Series:
+    """Versão vetorizada de :func:`_normalizar_texto` para uma coluna inteira."""
+    return serie.astype(str).str.strip().str.casefold()
+
+
 def construir_mascara(df: pd.DataFrame, criterio: Criterio) -> pd.Series:
     """Constrói a máscara booleana correspondente a um único critério de filtro."""
     validar_colunas(df, [criterio.coluna])
@@ -98,16 +108,36 @@ def construir_mascara(df: pd.DataFrame, criterio: Criterio) -> pd.Series:
 
     if criterio.operador == "em_lista":
         valores = criterio.valor if isinstance(criterio.valor, (list, tuple, set)) else [criterio.valor]
-        return serie.isin(valores)
+        if pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_bool_dtype(serie):
+            numeros = []
+            for valor in valores:
+                try:
+                    numeros.append(converter_numero_br(valor))
+                except (TypeError, ValueError):
+                    continue
+            return serie.isin(numeros)
+        if pd.api.types.is_datetime64_any_dtype(serie):
+            return serie.isin(converter_datas_br(pd.Series(list(valores))).dropna())
+        alvos = {_normalizar_texto(v) for v in valores}
+        return serie.notna() & _normalizar_serie_texto(serie).isin(alvos)
 
     if criterio.operador == "entre":
         inicio, fim = criterio.valor, criterio.valor2
+        if pd.api.types.is_datetime64_any_dtype(serie):
+            inicio_data, fim_data = converter_datas_br(inicio), converter_datas_br(fim)
+            if pd.isna(inicio_data) or pd.isna(fim_data):
+                raise ErroOperacao(f"Informe datas válidas (dd/mm/aaaa) para filtrar '{criterio.coluna}'.")
+            return serie.between(min(inicio_data, fim_data), max(inicio_data, fim_data))
         try:
-            serie_num = pd.to_numeric(serie, errors="coerce")
-            inicio_num, fim_num = float(inicio), float(fim)
-            return serie_num.between(min(inicio_num, fim_num), max(inicio_num, fim_num))
+            inicio_num, fim_num = converter_numero_br(inicio), converter_numero_br(fim)
         except (TypeError, ValueError):
+            if pd.api.types.is_numeric_dtype(serie):
+                raise ErroOperacao(
+                    f"Os valores '{inicio}' e '{fim}' não são compatíveis com a coluna numérica '{criterio.coluna}'."
+                ) from None
             return serie.astype(str).between(str(inicio), str(fim))
+        serie_num = pd.to_numeric(serie, errors="coerce")
+        return serie_num.between(min(inicio_num, fim_num), max(inicio_num, fim_num))
 
     if criterio.operador in ("contem", "nao_contem", "comeca_com", "termina_com"):
         serie_texto = serie.astype(str)
@@ -124,16 +154,23 @@ def construir_mascara(df: pd.DataFrame, criterio: Criterio) -> pd.Series:
 
     # Operadores de comparação: tenta numérico, cai para texto/data se necessário.
     valor_comparacao = criterio.valor
+    texto_livre = False
     if pd.api.types.is_numeric_dtype(serie):
         try:
-            valor_comparacao = float(criterio.valor)
+            valor_comparacao = converter_numero_br(criterio.valor)
         except (TypeError, ValueError):
             raise ErroOperacao(
                 f"O valor '{criterio.valor}' não é compatível com a coluna numérica '{criterio.coluna}'."
             ) from None
     elif pd.api.types.is_datetime64_any_dtype(serie):
-        valor_comparacao = pd.to_datetime(criterio.valor, errors="coerce")
+        valor_comparacao = converter_datas_br(criterio.valor)
+    else:
+        texto_livre = True
 
+    if criterio.operador in ("igual", "diferente") and texto_livre:
+        # Texto: ignora maiúsculas/minúsculas e espaços nas pontas, como o SOMASE/CONT.SE.
+        iguais = serie.notna() & (_normalizar_serie_texto(serie) == _normalizar_texto(criterio.valor))
+        return iguais if criterio.operador == "igual" else ~iguais
     if criterio.operador == "igual":
         return serie == valor_comparacao
     if criterio.operador == "diferente":
@@ -292,8 +329,8 @@ def criar_coluna_diferenca_datas(
     """Cria uma coluna com a diferença entre duas colunas de data."""
     validar_colunas(df, [coluna_inicio, coluna_fim])
     resultado = df.copy()
-    inicio = pd.to_datetime(df[coluna_inicio], errors="coerce")
-    fim = pd.to_datetime(df[coluna_fim], errors="coerce")
+    inicio = converter_datas_br(df[coluna_inicio])
+    fim = converter_datas_br(df[coluna_fim])
     diferenca = fim - inicio
     if unidade == "dias":
         resultado[nova_coluna] = diferenca.dt.days
@@ -429,7 +466,7 @@ def data_converter(serie: pd.Series, formato: Optional[str] = None) -> pd.Series
     """Converte uma coluna para o tipo data de forma segura, com valores inválidos viram NaT."""
     if formato:
         return pd.to_datetime(serie, format=formato, errors="coerce")
-    return pd.to_datetime(serie, errors="coerce", format="mixed")
+    return converter_datas_br(serie)
 
 
 _COMPONENTES_DATA: dict[str, Callable[[pd.Series], pd.Series]] = {
@@ -779,10 +816,10 @@ def construir_mascara_criterio(serie: pd.Series, criterio: str) -> pd.Series:
     if operador in (">", "<", ">=", "<="):
         serie_numerica = pd.to_numeric(serie, errors="coerce")
         try:
-            valor_numerico = float(valor)
+            valor_numerico = converter_numero_br(valor)
         except ValueError:
-            valor_numerico = pd.to_datetime(valor, errors="coerce")
-            serie_numerica = pd.to_datetime(serie, errors="coerce")
+            valor_numerico = converter_datas_br(valor)
+            serie_numerica = converter_datas_br(serie)
         if operador == ">":
             return serie_numerica > valor_numerico
         if operador == "<":
@@ -792,7 +829,7 @@ def construir_mascara_criterio(serie: pd.Series, criterio: str) -> pd.Series:
         return serie_numerica <= valor_numerico
 
     try:
-        valor_numerico = float(valor)
+        valor_numerico = converter_numero_br(valor)
         serie_comparacao = pd.to_numeric(serie, errors="coerce")
         if operador == "<>":
             return serie_comparacao != valor_numerico
