@@ -168,3 +168,25 @@ def test_se_aninhado_mistura_numero_e_texto_sem_virar_texto():
     resultado = op.funcao_se_aninhado(df, "c", [df["v"] >= 1000, df["v"] >= 500], [0.08, 0.05], "sem bônus")["c"]
     assert resultado.tolist() == ["sem bônus", 0.05, 0.08]
     assert isinstance(resultado.iloc[1], float)
+
+
+# Diferença de datas, combinação de filtros ----------------------------------------
+
+
+def test_diferenca_em_meses_e_anos_completos_como_datadif():
+    df = pd.DataFrame(
+        {
+            "i": pd.to_datetime(["2025-12-31", "2026-01-31", "2025-03-15", "2026-01-15", "2024-02-29"]),
+            "f": pd.to_datetime(["2026-01-01", "2026-02-28", "2026-03-14", "2026-02-15", "2026-03-01"]),
+        }
+    )
+    assert op.criar_coluna_diferenca_datas(df, "m", "i", "f", "meses")["m"].tolist() == [0, 0, 11, 1, 24]
+    assert op.criar_coluna_diferenca_datas(df, "a", "i", "f", "anos")["a"].tolist() == [0, 0, 0, 0, 2]
+    invertido = op.criar_coluna_diferenca_datas(df, "m", "f", "i", "meses")["m"].tolist()
+    assert invertido == [0, 0, -11, -1, -24]
+
+
+def test_combinacao_de_filtros_desconhecida_e_recusada():
+    df = pd.DataFrame({"a": [1, 2]})
+    with pytest.raises(Exception, match="Use E ou OU"):
+        op.aplicar_filtros(df, [Criterio("a", "igual", "1"), Criterio("a", "igual", "2")], "AND")

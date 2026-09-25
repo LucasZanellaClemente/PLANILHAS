@@ -505,8 +505,15 @@ def handler_filtrar(sessao: Sessao) -> None:
         valor2: Any = None
         if operador not in ("vazio", "nao_vazio"):
             if operador == "em_lista":
-                bruto = ler_texto("Valores (separados por vírgula): ")
-                valor = [v.strip() for v in bruto.split(",")]
+                numerica = pd.api.types.is_numeric_dtype(df[coluna]) and not pd.api.types.is_bool_dtype(df[coluna])
+                if numerica:
+                    # Em colunas numéricas a vírgula é decimal (10,5): a lista usa ponto e vírgula.
+                    bruto = ler_texto("Valores (separados por ponto e vírgula, ex.: 10,5; 20; 1.000): ")
+                    separador_lista = ";"
+                else:
+                    bruto = ler_texto("Valores (separados por vírgula ou ponto e vírgula): ")
+                    separador_lista = ";" if ";" in bruto else ","
+                valor = [v.strip() for v in bruto.split(separador_lista) if v.strip()]
             elif operador == "entre":
                 valor = ler_texto("Valor inicial: ")
                 valor2 = ler_texto("Valor final: ")
@@ -520,7 +527,13 @@ def handler_filtrar(sessao: Sessao) -> None:
         return
     operador_logico = "E"
     if len(criterios) > 1:
-        operador_logico = ler_texto("Combinar critérios com E ou OU: ", padrao="E").upper()
+        sinonimos = {"E": "E", "AND": "E", "OU": "OU", "OR": "OU"}
+        while True:
+            resposta = ler_texto("Combinar critérios com E ou OU: ", padrao="E").upper()
+            if resposta in sinonimos:
+                operador_logico = sinonimos[resposta]
+                break
+            print("Digite E (todos os critérios) ou OU (qualquer critério).")
     try:
         resultado = operacoes.aplicar_filtros(df, criterios, operador_logico)
     except ErroOperacao as exc:

@@ -87,6 +87,11 @@ caso(3, "Filtrar: Regiao igual 'sul' E Valor_Total >= 1.000", [VEN, cv("Regiao")
      lambda s, o: igual(len(ds(s, VEN)), len(esperado3)) or igual(ds(s, VEN).Valor_Total.sum(), esperado3.Valor_Total.sum()))
 caso(3, "Filtrar: em_lista Vendedor Bruno, Ana (OU com Quantidade 5)", [VEN, cv("Vendedor"), "em_lista", "bruno, ANA", "s", cv("Quantidade"), "igual", "5", "n", "OU", "s"],
      lambda s, o: igual(len(ds(s, VEN)), int((V.Vendedor.isin(["Bruno","Ana"]) | (V.Quantidade == 5)).sum())))
+caso(3, "Filtrar: em_lista numérico com decimal brasileiro", [CSVID, 2, "em_lista", "1,2; 0,95", "n", "s"],
+     lambda s, o: igual(ds(s, CSVID).Atingimento.tolist(), [0.95, 1.2]))
+caso(3, "Filtrar: combinação digitada como AND vira E", [VEN, cv("Regiao"), "igual", "Sul", "s", cv("Quantidade"), "igual", "5", "n", "AND", "s"],
+     lambda s, o: igual(len(ds(s, VEN)), int(((V.Regiao == "Sul") & (V.Quantidade == 5)).sum())))
+caso(9, "Data: diferença em meses (DATADIF)", [VEN, "3", cv("Data"), cv("Data"), "meses", "M", "s"], lambda s, o: igual(int(ds(s, VEN).M.sum()), 0))
 caso(4, "Ordenar por Valor_Total decrescente e Data", [VEN, f"{cv('Valor_Total')},{cv('Data')}", "n", "s", "s"],
      lambda s, o: igual(ds(s, VEN).Valor_Total.tolist(), V.sort_values(["Valor_Total","Data"], ascending=[False, True], kind="mergesort").Valor_Total.tolist()))
 caso(5, "Renomear Valor_Total", [VEN, "3", cv("Valor_Total"), "VT", "n", "s"], lambda s, o: igual(ds(s, VEN).VT.sum(), 90000))

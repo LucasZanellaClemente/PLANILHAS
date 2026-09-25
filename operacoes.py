@@ -195,6 +195,8 @@ def aplicar_filtros(df: pd.DataFrame, criterios: list[Criterio], operador_logico
     """Aplica uma lista de critérios combinados com E (AND) ou OU (OR)."""
     if not criterios:
         raise ErroOperacao("Informe ao menos um critério de filtro.")
+    if operador_logico.upper() not in ("E", "OU"):
+        raise ErroOperacao(f"Combinação desconhecida: '{operador_logico}'. Use E ou OU.")
     mascaras = [construir_mascara(df, c) for c in criterios]
     mascara_final = mascaras[0]
     for mascara in mascaras[1:]:
@@ -343,6 +345,27 @@ def criar_coluna_expressao(df: pd.DataFrame, nova_coluna: str, valores: pd.Serie
     return resultado
 
 
+def _meses_completos(inicio: pd.Series, fim: pd.Series) -> pd.Series:
+    """Meses completos entre duas datas, como o DATADIF(...; "m") do Excel.
+
+    31/12/2025 → 01/01/2026 dá 0 (o mês não se completou); 15/01 → 15/02 dá 1.
+    Se a data final for anterior à inicial, o resultado é negativo.
+    """
+    def contar(de: pd.Series, ate: pd.Series) -> pd.Series:
+        meses = (ate.dt.year - de.dt.year) * 12 + (ate.dt.month - de.dt.month)
+        return meses - (ate.dt.day < de.dt.day).astype(int)
+
+    invertido = fim < inicio
+    positivo = contar(inicio.where(~invertido, fim), fim.where(~invertido, inicio))
+    return positivo.where(~invertido, -positivo).astype("Int64")
+
+
+def _anos_completos(inicio: pd.Series, fim: pd.Series) -> pd.Series:
+    """Anos completos entre duas datas, como o DATADIF(...; "y") do Excel."""
+    meses = _meses_completos(inicio, fim)
+    return (meses.abs() // 12) * np.sign(meses)
+
+
 def criar_coluna_diferenca_datas(
     df: pd.DataFrame, nova_coluna: str, coluna_inicio: str, coluna_fim: str, unidade: str = "dias"
 ) -> pd.DataFrame:
@@ -357,9 +380,9 @@ def criar_coluna_diferenca_datas(
     elif unidade == "horas":
         resultado[nova_coluna] = diferenca / pd.Timedelta(hours=1)
     elif unidade == "meses":
-        resultado[nova_coluna] = (fim.dt.year - inicio.dt.year) * 12 + (fim.dt.month - inicio.dt.month)
+        resultado[nova_coluna] = _meses_completos(inicio, fim)
     elif unidade == "anos":
-        resultado[nova_coluna] = fim.dt.year - inicio.dt.year
+        resultado[nova_coluna] = _anos_completos(inicio, fim)
     else:
         raise ErroOperacao(f"Unidade desconhecida: '{unidade}'. Use dias, horas, meses ou anos.")
     return resultado
@@ -513,9 +536,9 @@ def data_diferenca(serie_inicio: pd.Series, serie_fim: pd.Series, unidade: str =
     if unidade == "horas":
         return diferenca / pd.Timedelta(hours=1)
     if unidade == "meses":
-        return (serie_fim.dt.year - serie_inicio.dt.year) * 12 + (serie_fim.dt.month - serie_inicio.dt.month)
+        return _meses_completos(serie_inicio, serie_fim)
     if unidade == "anos":
-        return serie_fim.dt.year - serie_inicio.dt.year
+        return _anos_completos(serie_inicio, serie_fim)
     raise ErroOperacao(f"Unidade desconhecida: '{unidade}'.")
 
 
