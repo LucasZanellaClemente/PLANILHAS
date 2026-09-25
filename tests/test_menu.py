@@ -125,9 +125,27 @@ def c11(s, o):
         for c in ref.columns:
             if pd.notna(ref.loc[r, c]): igual(t.loc[r, f"Valor_Total | {c}"], ref.loc[r, c], f"{r}/{c}")
 caso(11, "Tabela dinâmica Regiao × Produto com totais", [VEN, cv("Regiao"), "s", cv("Produto"), cv("Valor_Total"), "soma", "n", "s", "piv", "s"], c11)
-caso(12, "PROCV Vendas → Produtos (Categoria, Custo)", [VEN, PRO, cv("Produto"), 1, f"{col(P,'Categoria')},{col(P,'Custo_Unitario')}", "", "s"],
+caso(12, "PROCV Vendas → Produtos (Categoria, Custo)", [VEN, PRO, cv("Produto"), 1, f"{col(P,'Categoria')},{col(P,'Custo_Unitario')}", "s"],
      lambda s, o: igual(ds(s, VEN).Custo_Unitario.tolist(), V.Produto.map(P.set_index("Produto").Custo_Unitario).tolist()) or igual(len(ds(s, VEN)), 120))
-caso(12, "PROCV GL (número) → Contas_GL", [VEN, ids["Contas_GL"], cv("GL"), 1, 2, "", "s"], lambda s, o: igual(ds(s, VEN).Descricao_GL[0], "Receita de Serviços em Nuvem"))
+caso(12, "PROCV GL (número) → Contas_GL", [VEN, ids["Contas_GL"], cv("GL"), 1, 2, "s"], lambda s, o: igual(ds(s, VEN).Descricao_GL[0], "Receita de Serviços em Nuvem"))
+def _vendas_com_regiao_parcial():
+    s = copy.deepcopy(base)
+    d = s.obter_dataset(VEN)
+    d.df = d.df.assign(Regiao=d.df.Regiao.where(d.df.index % 2 == 0, None).where(d.df.index != 0, "Errada"))
+    return s
+
+
+REGIAO_DO_VENDEDOR = V.Vendedor.map(VD.set_index("Vendedor").Regiao)
+caso(12, "PROCV em coluna existente: substituir", [VEN, VDD, cv("Vendedor"), 1, col(VD, "Regiao"), 1, "s"],
+     lambda s, o: igual(ds(s, VEN).Regiao.tolist(), REGIAO_DO_VENDEDOR.tolist()) or igual(ds(s, VEN).shape[1], V.shape[1]),
+     sessao=_vendas_com_regiao_parcial())
+caso(12, "PROCV em coluna existente: preencher só vazios", [VEN, VDD, cv("Vendedor"), 1, col(VD, "Regiao"), 2, "s"],
+     lambda s, o: igual(ds(s, VEN).Regiao[0], "Errada") or igual(ds(s, VEN).Regiao.tolist()[1:], REGIAO_DO_VENDEDOR.tolist()[1:]),
+     sessao=_vendas_com_regiao_parcial())
+caso(12, "PROCV em coluna existente: coluna nova com sufixo", [VEN, VDD, cv("Vendedor"), 1, col(VD, "Regiao"), 3, "_vend", "s"],
+     lambda s, o: igual(ds(s, VEN).Regiao_vend.tolist(), REGIAO_DO_VENDEDOR.tolist()))
+caso(14, "PROCX em coluna existente: substituir", [VEN, VDD, cv("Vendedor"), 1, col(VD, "Regiao"), 1, "exata", "primeira", "n", "s"],
+     lambda s, o: igual(ds(s, VEN).Regiao.tolist(), REGIAO_DO_VENDEDOR.tolist()), sessao=_vendas_com_regiao_parcial())
 caso(13, "PROCH na aba Faixas_Bonus", [FAI, 0, "Abaixo da meta", 1, "proch", "s"], lambda s, o: igual(ultimo(s).valor_retornado[0], "Próximo da meta"))
 caso(14, "PROCX exato Vendas → Vendedores (Comissão, não encontrado 0)", [VEN, VDD, cv("Vendedor"), 1, col(VD, "Comissao_Pct"), "exata", "primeira", "s", "0", "s"],
      lambda s, o: igual(ds(s, VEN).Comissao_Pct.tolist(), V.Vendedor.map(VD.set_index("Vendedor").Comissao_Pct).tolist()))
@@ -164,19 +182,40 @@ def s30():
     rodar(ui.handler_somase, [VEN, cv("Valor_Total"), cv("Regiao"), "Sul", "", "s"], s)
     rodar(ui.handler_se, [VEN, "Valor_Total >= 1000", "100", "0", "Bonus", "s"], s)
     return s
-def c30(s, o):
-    wb = openpyxl.load_workbook(TMP / "relatorio.xlsx")
+def c30_completo(s, o):
+    arquivo = TMP / "relatorio_completo.xlsx"
+    wb = openpyxl.load_workbook(arquivo)
     nomes = wb.sheetnames
-    for obrig in ["Resumo", "Catalogo_Colunas", "Qualidade_Dados", "Historico", "Vendas_orig", "Vendas_alt", "atingimento_orig"]:
+    for obrig in ["Resumo", "Catalogo_Colunas", "Qualidade_Dados", "Historico", "Vendas_orig", "Vendas_alt", "atingimento_orig", "Vendas_somase"]:
         assert obrig in nomes, f"aba {obrig} ausente: {nomes}"
-    alt = pd.read_excel(TMP / "relatorio.xlsx", "Vendas_alt")
-    igual(alt.Valor_Total.sum(), 90000); igual(alt.Bonus.sum(), 100 * int((V.Valor_Total >= 1000).sum()))
+    alt = pd.read_excel(arquivo, "Vendas_alt")
+    igual(alt.Valor_Total.sum(), 90000)
+    igual(alt.Bonus.sum(), 100 * int((V.Valor_Total >= 1000).sum()))
     assert pd.api.types.is_numeric_dtype(alt.Bonus), "Bonus gravado como texto"
-    at = pd.read_excel(TMP / "relatorio.xlsx", "atingimento_orig"); igual(at.Valor.tolist()[0], 1500)
-    som = [n for n in nomes if n not in ("Resumo","Catalogo_Colunas","Qualidade_Dados","Historico") and not n.endswith(("_orig","_alt"))][0]; igual(pd.read_excel(TMP / "relatorio.xlsx", som).Resultado[0], 9000)
-    formulas = sum(1 for ws in wb.worksheets for r in ws.iter_rows() for c in r if c.data_type == "f")
-    igual(formulas, 0, "fórmulas")
-caso(30, "Salvar relatório e reler o .xlsx", [TMP / "relatorio.xlsx"], c30, sessao=s30())
+    igual(pd.read_excel(arquivo, "atingimento_orig").Valor.tolist()[0], 1500)
+    igual(pd.read_excel(arquivo, "Vendas_somase").Resultado[0], 9000)
+    igual(sum(1 for ws in wb.worksheets for r in ws.iter_rows() for c in r if c.data_type == "f"), 0, "fórmulas")
+
+
+def c30_resumido(s, o):
+    arquivo = TMP / "relatorio.xlsx"
+    nomes = openpyxl.load_workbook(arquivo).sheetnames
+    igual(nomes, ["Resumo", "Operacoes_Executadas", "Vendas", "Vendas_somase"])
+    ops = pd.read_excel(arquivo, "Operacoes_Executadas")
+    igual(ops["Opção executada"].tolist(), ["SOMASE", "SE"])
+    assert str(ops["Resultado"][0]).startswith("9000"), ops["Resultado"][0]
+    assert "Valor_Total >= 1000" in ops["O que foi feito"][1]
+    igual(ops["Linhas"][1], "120 → 120")
+    vendas = pd.read_excel(arquivo, "Vendas")
+    igual(vendas.Bonus.sum(), 100 * int((V.Valor_Total >= 1000).sum()))
+    resumo = dict(pd.read_excel(arquivo, "Resumo").values)
+    igual(int(resumo["Operações executadas"]), 2)
+    assert "SOMASE (1x)" in resumo["Opções usadas"]
+    assert "Resumo do que foi feito" in o and "1. SOMASE" in o
+
+
+caso(30, "Salvar relatório resumido (padrão) e reler o .xlsx", ["", TMP / "relatorio.xlsx"], c30_resumido, sessao=s30())
+caso(30, "Salvar relatório completo e reler o .xlsx", ["2", TMP / "relatorio_completo.xlsx"], c30_completo, sessao=s30())
 
 
 @pytest.mark.parametrize("num, entradas, conferir, handler, sessao", CASOS)

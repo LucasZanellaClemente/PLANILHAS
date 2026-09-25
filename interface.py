@@ -397,6 +397,7 @@ def criar_dataset_com_confirmacao(
         colunas_antes=0,
         colunas_depois=df_resultado.shape[1],
         avisos="; ".join(avisos) if avisos else "",
+        resultado=f"novo dataset {nome_sugerido}",
     )
     sessao.registrar_historico(entrada)
     print(f"Novo dataset [{novo_dataset.id}] '{nome_sugerido}' criado com sucesso.")
@@ -424,6 +425,10 @@ def salvar_resultado_com_confirmacao(
         return False
 
     nome_final = sessao.adicionar_resultado(nome_sugerido, df_resultado)
+    if "Resultado" in df_resultado.columns and len(df_resultado) == 1:
+        resumo_resultado = f"{df_resultado['Resultado'].iloc[0]} (aba {nome_final})"
+    else:
+        resumo_resultado = f"aba {nome_final}"
     entrada = HistoricoEntry(
         timestamp=datetime.now(),
         dataset_id=0,
@@ -435,6 +440,7 @@ def salvar_resultado_com_confirmacao(
         colunas_antes=0,
         colunas_depois=df_resultado.shape[1],
         avisos="; ".join(avisos) if avisos else "",
+        resultado=resumo_resultado,
     )
     sessao.registrar_historico(entrada)
     print(f"Resultado salvo como '{nome_final}' para exportação.")
@@ -975,6 +981,19 @@ def handler_pivot(sessao: Sessao) -> None:
     )
 
 
+def _perguntar_coluna_existente(df_principal: pd.DataFrame, colunas_retorno: list[str]) -> str:
+    """Pergunta o que fazer quando uma coluna de retorno já existe no dataset principal."""
+    existentes = [c for c in colunas_retorno if c in df_principal.columns]
+    if not existentes:
+        return "nova"
+    print(f"A(s) coluna(s) {', '.join(existentes)} já existe(m) no dataset principal.")
+    print("  1. Substituir pelos valores encontrados (linhas sem correspondência ficam como estão)")
+    print("  2. Preencher só as células vazias")
+    print("  3. Criar uma coluna nova (com sufixo)")
+    escolha = ler_inteiro("O que fazer: ", minimo=1, maximo=3, padrao=1)
+    return {1: "substituir", 2: "preencher_vazios", 3: "nova"}[escolha]
+
+
 def handler_procv(sessao: Sessao) -> None:
     """Opção 12: executa PROCV, enriquecendo o dataset principal com colunas do dataset de consulta."""
     print("Selecione o dataset PRINCIPAL (onde as colunas serão adicionadas):")
@@ -991,9 +1010,14 @@ def handler_procv(sessao: Sessao) -> None:
     if not colunas_retorno:
         print("Selecione ao menos uma coluna de retorno.")
         return
-    sufixo = ler_texto("Sufixo para colunas em caso de conflito de nomes: ", padrao="_procv")
+    modo_existente = _perguntar_coluna_existente(principal.df, colunas_retorno)
+    sufixo = "_procv"
+    if modo_existente == "nova" and any(c in principal.df.columns for c in colunas_retorno):
+        sufixo = ler_texto("Sufixo para as colunas novas: ", padrao="_procv")
     try:
-        resultado = operacoes.executar_procv(principal.df, consulta.df, chave_principal, chave_consulta, colunas_retorno, sufixo)
+        resultado = operacoes.executar_procv(
+            principal.df, consulta.df, chave_principal, chave_consulta, colunas_retorno, sufixo, modo_existente
+        )
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
@@ -1053,6 +1077,7 @@ def handler_procx(sessao: Sessao) -> None:
     if not colunas_retorno:
         print("Selecione ao menos uma coluna de retorno.")
         return
+    modo_existente = _perguntar_coluna_existente(principal.df, colunas_retorno)
     modo = ler_texto("Modo de correspondência (exata/aproximada): ", padrao="exata")
     ocorrencia = "primeira"
     valor_nao_encontrado = None
@@ -1062,7 +1087,15 @@ def handler_procx(sessao: Sessao) -> None:
         valor_nao_encontrado = ler_valor("Valor para 'não encontrado': ")
     try:
         resultado = operacoes.executar_procx(
-            principal.df, consulta.df, coluna_busca_principal, coluna_busca_consulta, colunas_retorno, modo, ocorrencia, valor_nao_encontrado
+            principal.df,
+            consulta.df,
+            coluna_busca_principal,
+            coluna_busca_consulta,
+            colunas_retorno,
+            modo,
+            ocorrencia,
+            valor_nao_encontrado,
+            modo_existente,
         )
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
@@ -1438,6 +1471,9 @@ def handler_salvar(sessao: Sessao) -> None:
     if not sessao.datasets:
         print("Nenhum dataset carregado; não há o que exportar.")
         return
+    print("  1. Resumido: resumo, opções executadas e os dados que mudaram ou foram calculados")
+    print("  2. Completo: inclui também catálogo, qualidade e todas as abas originais")
+    completo = ler_inteiro("Tipo de relatório: ", minimo=1, maximo=2, padrao=1) == 2
     caminho = Path(ler_texto("Nome do arquivo de saída: ", padrao="relatorio.xlsx"))
     if not caminho.suffix:
         caminho = caminho.with_suffix(".xlsx")
@@ -1446,9 +1482,16 @@ def handler_salvar(sessao: Sessao) -> None:
             caminho = exportador.gerar_nome_com_timestamp(caminho)
             print(f"Um novo nome será utilizado: {caminho}")
     try:
-        caminho_final = exportador.gerar_relatorio(sessao, caminho)
+        caminho_final = exportador.gerar_relatorio(sessao, caminho, completo=completo)
     except Exception as exc:  # noqa: BLE001 - qualquer falha na exportação não deve encerrar o programa
         print(f"Erro ao gerar o relatório: {exc}")
         logger.exception("Falha ao gerar relatório")
         return
     print(f"Relatório salvo em: {caminho_final.resolve()}")
+    print("\nResumo do que foi feito:")
+    for _, linha in exportador.montar_resumo_sessao(sessao).iterrows():
+        print(f"  {linha['Item']}: {linha['Valor']}")
+    operacoes_feitas = exportador.montar_operacoes_executadas(sessao)
+    for _, linha in operacoes_feitas.iterrows():
+        resultado = f" = {linha['Resultado']}" if linha["Resultado"] else ""
+        print(f"  {linha['#']}. {linha['Opção executada']} ({linha['O que foi feito']}){resultado}")

@@ -29,6 +29,7 @@ class HistoricoEntry:
     colunas_antes: int
     colunas_depois: int
     avisos: str = ""
+    resultado: str = ""
 
     def como_linha(self) -> dict[str, object]:
         """Converte a entrada em um dicionário pronto para virar linha de DataFrame."""
@@ -41,6 +42,7 @@ class HistoricoEntry:
             "Linhas (depois)": self.linhas_depois,
             "Colunas (antes)": self.colunas_antes,
             "Colunas (depois)": self.colunas_depois,
+            "Resultado": self.resultado,
             "Avisos": self.avisos,
         }
 

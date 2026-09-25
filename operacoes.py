@@ -633,6 +633,47 @@ class ResultadoBusca:
     avisos: list[str] = field(default_factory=list)
 
 
+MODOS_COLUNA_EXISTENTE = ("nova", "substituir", "preencher_vazios")
+
+
+def _gravar_coluna_retorno(
+    resultado: pd.DataFrame,
+    coluna: str,
+    valores: pd.Series,
+    encontrado: pd.Series,
+    modo: str,
+    sufixo: str,
+    valor_nao_encontrado: Any = None,
+) -> str:
+    """Grava o retorno de uma busca e devolve um aviso descrevendo o que foi feito.
+
+    Quando a coluna já existe no dataset principal, ``modo`` decide:
+
+    * ``substituir``: copia o valor encontrado para a coluna existente; linhas
+      sem correspondência mantêm o valor que já tinham;
+    * ``preencher_vazios``: só preenche as células vazias da coluna existente;
+    * ``nova``: cria outra coluna com o sufixo (``Categoria_procv``).
+    """
+    if modo not in MODOS_COLUNA_EXISTENTE:
+        raise ErroOperacao(f"Modo desconhecido para coluna existente: '{modo}'.")
+    if coluna not in resultado.columns or modo == "nova":
+        nome = coluna if coluna not in resultado.columns else f"{coluna}{sufixo}"
+        novos = valores.where(encontrado)
+        if valor_nao_encontrado is not None:
+            novos = novos.where(encontrado, valor_nao_encontrado)
+        resultado[nome] = novos
+        return ""
+    atual = resultado[coluna]
+    alvo = encontrado if modo == "substituir" else (encontrado & atual.isna())
+    novos = atual.astype(object).mask(alvo, valores)
+    if valor_nao_encontrado is not None:
+        sem_valor = ~encontrado if modo == "substituir" else (~encontrado & atual.isna())
+        novos = novos.mask(sem_valor, valor_nao_encontrado)
+    resultado[coluna] = novos.infer_objects()
+    acao = "substituída" if modo == "substituir" else "preenchida (só células vazias)"
+    return f"Coluna existente '{coluna}' {acao} em {int(alvo.sum())} linha(s)."
+
+
 def executar_procv(
     df_principal: pd.DataFrame,
     df_consulta: pd.DataFrame,
@@ -640,6 +681,7 @@ def executar_procv(
     chave_consulta: str,
     colunas_retorno: list[str],
     sufixo: str = "_procv",
+    modo_coluna_existente: str = "nova",
 ) -> ResultadoBusca:
     """Reproduz o comportamento do PROCV (correspondência exata) via ``pandas.merge``."""
     validar_colunas(df_principal, [chave_principal])
@@ -675,8 +717,11 @@ def executar_procv(
 
     resultado = df_principal.copy()
     for coluna in colunas_retorno:
-        nome_final = coluna if coluna not in resultado.columns else f"{coluna}{sufixo}"
-        resultado[nome_final] = chaves_principal.map(tabela[coluna]).where(encontrado)
+        aviso = _gravar_coluna_retorno(
+            resultado, coluna, chaves_principal.map(tabela[coluna]), encontrado, modo_coluna_existente, sufixo
+        )
+        if aviso:
+            avisos.append(aviso)
 
     sem_correspondencia = int((~encontrado).sum())
     if sem_correspondencia > 0:
@@ -738,6 +783,7 @@ def executar_procx(
     modo_correspondencia: str = "exata",
     ocorrencia: str = "primeira",
     valor_nao_encontrado: Any = None,
+    modo_coluna_existente: str = "nova",
 ) -> ResultadoBusca:
     """Reproduz o comportamento do PROCX (XLOOKUP), com correspondência exata ou aproximada.
 
@@ -769,11 +815,11 @@ def executar_procx(
         encontrado = chaves_principal.isin(mapa.index)
         resultado = df_principal.copy()
         for coluna in colunas_retorno:
-            valores_mapeados = chaves_principal.map(mapa[coluna]).where(encontrado)
-            if valor_nao_encontrado is not None:
-                valores_mapeados = valores_mapeados.where(encontrado, valor_nao_encontrado)
-            nome_novo = coluna if coluna not in resultado.columns else f"{coluna}_procx"
-            resultado[nome_novo] = valores_mapeados
+            aviso = _gravar_coluna_retorno(
+                resultado, coluna, chaves_principal.map(mapa[coluna]), encontrado, modo_coluna_existente, "_procx", valor_nao_encontrado
+            )
+            if aviso:
+                avisos.append(aviso)
         nao_encontrados = int((~encontrado).sum())
         if nao_encontrados > 0:
             avisos.append(f"{nao_encontrados} linha(s) sem correspondência exata.")
@@ -802,13 +848,14 @@ def executar_procx(
         posicoes = np.where(encontrado, posicoes, 0)
 
         resultado = df_principal.copy()
+        encontrado_serie = pd.Series(encontrado, index=df_principal.index)
         for coluna in colunas_retorno:
             valores = pd.Series(tabela[coluna].to_numpy()[posicoes], index=df_principal.index)
-            valores = valores.where(encontrado)
-            if valor_nao_encontrado is not None:
-                valores = valores.where(encontrado, valor_nao_encontrado)
-            nome_novo = coluna if coluna not in resultado.columns else f"{coluna}_procx"
-            resultado[nome_novo] = valores
+            aviso = _gravar_coluna_retorno(
+                resultado, coluna, valores, encontrado_serie, modo_coluna_existente, "_procx", valor_nao_encontrado
+            )
+            if aviso:
+                avisos.append(aviso)
         nao_encontrados = int((~encontrado).sum())
         if nao_encontrados > 0:
             avisos.append(

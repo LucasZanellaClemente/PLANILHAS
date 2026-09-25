@@ -99,14 +99,26 @@ Escolha uma opção: 3
 [...menu de filtro...]
 
 Escolha uma opção: 30
+  1. Resumido: resumo, opções executadas e os dados que mudaram ou foram calculados
+  2. Completo: inclui também catálogo, qualidade e todas as abas originais
+Tipo de relatório: 1
 Nome do arquivo de saída: relatorio.xlsx
 Relatório salvo em: C:\...\relatorio.xlsx
+
+Resumo do que foi feito:
+  Operações executadas: 2
+  1. Filtrar dados (criterios: (Regiao, igual, sul), logico: E)
+  2. SOMASE (coluna_soma: Valor_Total, coluna_criterio: Regiao, criterio: Sul) = 9000.0 (aba Vendas_somase)
 ```
 
-O `relatorio.xlsx` gerado contém, entre outras, as abas `Resumo`,
-`Catalogo_Colunas`, `Qualidade_Dados`, `Historico`, uma aba por dataset
-original (`<nome>_orig`), uma aba por dataset alterado (`<nome>_alt`) e uma
-aba por resultado nomeado (tabelas dinâmicas, PROCH, SOMASE etc.).
+O relatório **resumido** (padrão) traz a aba `Resumo`, a aba
+`Operacoes_Executadas` (cada opção usada, o que foi feito, o resultado e as
+linhas antes e depois), uma aba com a versão final de cada dataset alterado ou
+criado e uma aba por resultado salvo (tabelas dinâmicas, PROCH, SOMASE etc.).
+
+O relatório **completo** traz também `Catalogo_Colunas`, `Qualidade_Dados`,
+`Historico` e, para todos os datasets, a versão original (`<nome>_orig`) e a
+alterada (`<nome>_alt`).
 
 ## Arquitetura (resumo)
 

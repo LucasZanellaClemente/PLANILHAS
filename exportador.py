@@ -210,6 +210,7 @@ def _montar_historico(sessao: Sessao) -> pd.DataFrame:
                 "Linhas (depois)",
                 "Colunas (antes)",
                 "Colunas (depois)",
+                "Resultado",
                 "Avisos",
             ]
         )
@@ -226,9 +227,96 @@ def _nome_aba_com_sufixo(nome_base: str, sufixo: str) -> str:
     return f"{nome_base[: 31 - len(sufixo)]}{sufixo}"
 
 
-def gerar_relatorio(sessao: Sessao, caminho_saida: Path) -> Path:
-    """Gera o arquivo ``relatorio.xlsx`` com todas as abas exigidas e retorna o caminho final."""
+def descrever_parametros(parametros: str) -> str:
+    """Deixa os parâmetros gravados no histórico legíveis: ``colunas=['A', 'B']`` vira ``colunas: A, B``."""
+    texto = re.sub(r"\bNone\b", "", str(parametros))
+    texto = re.sub(r"[\[\]'\"]", "", texto)
+    texto = re.sub(r"(\w+)=", r"\1: ", texto)
+    texto = re.sub(r",\s*\)", ")", texto)
+    texto = re.sub(r"\b\w+:\s*(?=,|$)", "", texto)  # parâmetros vazios
+    texto = re.sub(r"(,\s*){2,}", ", ", texto)
+    return re.sub(r"\s{2,}", " ", texto).strip(" ,")
+
+
+def _dataset_foi_alterado(dataset: Any) -> bool:
+    return dataset.origem == "derivado" or not dataset.df.equals(dataset.df_original)
+
+
+def montar_operacoes_executadas(sessao: Sessao) -> pd.DataFrame:
+    """Lista, em ordem, as opções executadas e confirmadas na sessão, em linguagem simples."""
+    linhas = []
+    for numero, entrada in enumerate(sessao.historico, start=1):
+        if entrada.linhas_antes or entrada.colunas_antes:
+            linhas_txt = f"{entrada.linhas_antes} → {entrada.linhas_depois}"
+            colunas_txt = f"{entrada.colunas_antes} → {entrada.colunas_depois}"
+        else:
+            # Resultado salvo ou dataset novo: os dados de origem não mudaram.
+            linhas_txt = colunas_txt = "-"
+        linhas.append(
+            {
+                "#": numero,
+                "Hora": entrada.timestamp.strftime("%H:%M:%S"),
+                "Opção executada": entrada.operacao,
+                "Dataset": entrada.dataset_nome,
+                "O que foi feito": descrever_parametros(entrada.parametros),
+                "Resultado": entrada.resultado,
+                "Linhas": linhas_txt,
+                "Colunas": colunas_txt,
+                "Avisos": entrada.avisos,
+            }
+        )
+    colunas = ["#", "Hora", "Opção executada", "Dataset", "O que foi feito", "Resultado", "Linhas", "Colunas", "Avisos"]
+    return pd.DataFrame(linhas, columns=colunas)
+
+
+def montar_resumo_sessao(sessao: Sessao) -> pd.DataFrame:
+    """Resumo curto do que foi feito na sessão, usado no relatório resumido e na tela."""
+    alterados = [d for d in sessao.listar_datasets() if _dataset_foi_alterado(d)]
+    contagem: dict[str, int] = {}
+    for entrada in sessao.historico:
+        contagem[entrada.operacao] = contagem.get(entrada.operacao, 0) + 1
+    metricas = [
+        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
+        ("Arquivos importados", ", ".join(sorted(set(sessao.arquivos_processados))) or "-"),
+        ("Operações executadas", len(sessao.historico)),
+        ("Opções usadas", ", ".join(f"{nome} ({qtd}x)" for nome, qtd in contagem.items()) or "-"),
+        (
+            "Datasets alterados ou criados",
+            ", ".join(f"{d.identificador_exibicao()} ({len(d.df)} linhas)" for d in alterados) or "nenhum",
+        ),
+        ("Resultados salvos", ", ".join(sessao.resultados) or "nenhum"),
+    ]
+    return pd.DataFrame(metricas, columns=["Item", "Valor"])
+
+
+def _gerar_relatorio_resumido(sessao: Sessao, caminho_saida: Path) -> Path:
+    """Relatório prático: resumo, opções executadas e só os dados que mudaram ou foram calculados."""
+    with pd.ExcelWriter(caminho_saida, engine="xlsxwriter") as writer:
+        construtor = _ConstrutorRelatorio(writer)
+        construtor.escrever_dataframe("Resumo", montar_resumo_sessao(sessao), incluir_tabela_excel=False)
+        construtor.escrever_dataframe("Operacoes_Executadas", montar_operacoes_executadas(sessao))
+        alterados = [d for d in sessao.listar_datasets() if _dataset_foi_alterado(d)]
+        bases = [_nome_base_dataset(d) for d in alterados]
+        for dataset, nome_base in zip(alterados, bases):
+            if bases.count(nome_base) > 1:
+                nome_base = f"{dataset.id}_{nome_base}"
+            construtor.escrever_dataframe(nome_base, dataset.df)
+        for nome_resultado, df_resultado in sessao.resultados.items():
+            construtor.escrever_dataframe(nome_resultado, df_resultado)
+    logger.info("Relatório resumido gerado em: %s", caminho_saida)
+    return caminho_saida
+
+
+def gerar_relatorio(sessao: Sessao, caminho_saida: Path, completo: bool = False) -> Path:
+    """Gera o relatório em Excel e retorna o caminho final.
+
+    O padrão é o relatório resumido (resumo, opções executadas, datasets
+    alterados e resultados). Com ``completo=True`` inclui também catálogo,
+    qualidade dos dados e as versões original e alterada de todos os datasets.
+    """
     caminho_saida.parent.mkdir(parents=True, exist_ok=True)
+    if not completo:
+        return _gerar_relatorio_resumido(sessao, caminho_saida)
 
     with pd.ExcelWriter(caminho_saida, engine="xlsxwriter") as writer:
         construtor = _ConstrutorRelatorio(writer)
