@@ -11,6 +11,8 @@ from typing import Any
 
 import pandas as pd
 
+from utils import eh_coluna_texto
+
 
 def identificar_tipo_coluna(serie: pd.Series) -> str:
     """Classifica uma coluna como numérica, texto, data, booleana ou outro tipo."""
@@ -20,7 +22,7 @@ def identificar_tipo_coluna(serie: pd.Series) -> str:
         return "numérico"
     if pd.api.types.is_datetime64_any_dtype(serie):
         return "data"
-    if serie.dtype == object:
+    if eh_coluna_texto(serie):
         amostra = serie.dropna().astype(str).head(50)
         if len(amostra) > 0:
             convertido = pd.to_datetime(amostra, errors="coerce", format="mixed")

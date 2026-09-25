@@ -89,7 +89,8 @@ class _ConstrutorRelatorio:
             serie = df[nome_coluna]
             tamanho_cabecalho = len(str(nome_coluna))
             if len(serie) > 0:
-                tamanho_valores = serie.astype(str).map(len).max()
+                # Vazios contam como 0: no pandas 3 o astype(str) mantém NaN e len() falharia.
+                tamanho_valores = serie.map(lambda valor: 0 if pd.isna(valor) else len(str(valor))).max()
             else:
                 tamanho_valores = 0
             largura = min(max(tamanho_cabecalho, int(tamanho_valores), LARGURA_MINIMA_COLUNA) + 2, LARGURA_MAXIMA_COLUNA)
