@@ -1,0 +1,30 @@
+2026-09-25 09:23:49,028 [INFO] __main__: Aplicação iniciada.
+2026-09-25 09:23:49,034 [INFO] __main__: Aplicação iniciada.
+2026-09-25 09:28:16,882 [ERROR] interface: Falha ao gerar relatório
+Traceback (most recent call last):
+  File "c:\Users\lucas.clemente\OneDrive - Indorama Ventures PCL\Documentos\teste2\PLANILHAS\interface.py", line 1409, in handler_salvar
+    caminho_final = exportador.gerar_relatorio(sessao, caminho)
+  File "c:\Users\lucas.clemente\OneDrive - Indorama Ventures PCL\Documentos\teste2\PLANILHAS\exportador.py", line 230, in gerar_relatorio
+    construtor.escrever_dataframe(f"{nome_base}_orig", dataset.df_original)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\lucas.clemente\OneDrive - Indorama Ventures PCL\Documentos\teste2\PLANILHAS\exportador.py", line 74, in escrever_dataframe
+    self._formatar_colunas(planilha, df_seguro)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\lucas.clemente\OneDrive - Indorama Ventures PCL\Documentos\teste2\PLANILHAS\exportador.py", line 92, in _formatar_colunas
+    tamanho_valores = serie.astype(str).map(len).max()
+                      ~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\lucas.clemente\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\series.py", line 4675, in map
+    new_values = self._map_values(func, na_action=na_action)
+  File "C:\Users\lucas.clemente\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\base.py", line 1020, in _map_values
+    return arr.map(mapper, na_action=na_action)
+           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lucas.clemente\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\arrays\base.py", line 2745, in map
+    return map_array(self, mapper, na_action=na_action)
+  File "C:\Users\lucas.clemente\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\algorithms.py", line 1715, in map_array
+    return lib.map_infer(values, mapper)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "pandas/_libs/lib.pyx", line 3071, in pandas._libs.lib.map_infer
+TypeError: object of type 'float' has no len()
+2026-09-25 10:59:32,339 [INFO] __main__: Aplicação iniciada.
+2026-09-25 10:59:32,343 [ERROR] interface: Falha ao importar 'C:\Users\lucas.clemente\AppData\Local\Python\pythoncore-3.14-64\python.exe "c:/Users/lucas.clemente/OneDrive - Indorama Ventures PCL/Documentos/teste2/PLANILHAS/exportador.py"': Arquivo não encontrado: C:\Users\lucas.clemente\AppData\Local\Python\pythoncore-3.14-64\python.exe "c:\Users\lucas.clemente\OneDrive - Indorama Ventures PCL\Documentos\teste2\PLANILHAS\exportador.py"
+2026-09-25 11:00:52,640 [INFO] exportador: Relatório gerado em: testeeeeeeeee.xlsx
