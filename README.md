@@ -112,7 +112,7 @@ Resumo do que foi feito:
 ```
 
 O relatório **resumido** (padrão) traz a aba `Resumo`, a aba
-a aba **`Planilha Atualizada`** (a planilha como ficou depois das ações, com
+**`Planilha Atualizada`** (a planilha como ficou depois das ações, com
 as colunas do PROCV, SE etc.; com mais de uma planilha alterada, uma aba
 `Planilha Atualizada - <nome>` para cada), a aba `Operacoes_Executadas` (cada
 opção usada, o que foi feito, o resultado e as linhas antes e depois) e uma aba
