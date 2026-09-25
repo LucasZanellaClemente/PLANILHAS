@@ -32,6 +32,15 @@ def sanitizar_valor_formula(valor: Any) -> Any:
     return valor
 
 
+def eh_coluna_texto(serie: pd.Series) -> bool:
+    """Indica se a coluna guarda texto.
+
+    No pandas 2 o texto fica em colunas ``object``; no pandas 3 ele usa o tipo
+    ``str`` (``pd.StringDtype``). As duas formas precisam ser reconhecidas.
+    """
+    return pd.api.types.is_object_dtype(serie) or isinstance(serie.dtype, pd.StringDtype)
+
+
 def sanitizar_dataframe_formulas(df: pd.DataFrame) -> pd.DataFrame:
     """Aplica :func:`sanitizar_valor_formula` a todas as colunas textuais de um DataFrame."""
     df_seguro = df.copy()
@@ -79,13 +88,26 @@ def serie_numeros_br(serie: pd.Series) -> pd.Series | None:
     return convertida.astype(float)
 
 
+_PADRAO_DATA_ANO_PRIMEIRO = r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T].*)?$"
+
+
 def converter_datas_br(valores: Any) -> Any:
     """Converte datas priorizando o formato brasileiro (dia/mês/ano).
 
-    Datas ISO (``2026-02-01``) continuam sendo lidas como ano-mês-dia.
+    Datas que começam pelo ano (``2026-02-01``) são sempre lidas como
+    ano-mês-dia: no pandas 3 o ``dayfirst=True`` também inverteria essas.
     Valores inválidos viram ``NaT``.
     """
-    return pd.to_datetime(valores, errors="coerce", format="mixed", dayfirst=True)
+    if not isinstance(valores, (pd.Series, pd.Index, list, tuple, np.ndarray)):
+        return converter_datas_br(pd.Series([valores])).iloc[0]
+    serie = valores if isinstance(valores, pd.Series) else pd.Series(list(valores))
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        return serie
+    textos = serie.where(serie.notna(), "").astype(str).str.strip()
+    ano_primeiro = textos.str.match(_PADRAO_DATA_ANO_PRIMEIRO)
+    iso = pd.to_datetime(textos.where(ano_primeiro).str.replace("/", "-"), errors="coerce", format="ISO8601")
+    outros = pd.to_datetime(serie.where(~ano_primeiro), errors="coerce", format="mixed", dayfirst=True)
+    return iso.where(ano_primeiro, outros)
 
 
 def curinga_para_regex(padrao: str) -> str:
