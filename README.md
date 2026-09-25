@@ -48,6 +48,22 @@ Em Linux/macOS, ative o ambiente virtual com `source .venv/bin/activate`.
 python main.py
 ```
 
+## Testes automáticos
+
+Os testes conferem as funções contra a aba **Gabarito** de
+`Dataset_Financas_Complementar.xlsx` e contra casos que já deram valor errado
+(datas, números no formato brasileiro, PROCV, tabela dinâmica, arredondamento)
+e executam as opções 1 a 30 do menu com entradas simuladas:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+Nos campos de valor (SE, SE aninhado, valor fixo, "não encontrado" do PROCX,
+preencher nulos com valor), números como `100` ou `0,05` são gravados como
+número. Para gravar um número como texto, digite-o entre aspas: `"100"`.
+
 ## Exemplo de uso
 
 ```
@@ -83,14 +99,35 @@ Escolha uma opção: 3
 [...menu de filtro...]
 
 Escolha uma opção: 30
+  1. Resumido: resumo, opções executadas e os dados que mudaram ou foram calculados
+  2. Completo: inclui também catálogo, qualidade e todas as abas originais
+Tipo de relatório: 1
 Nome do arquivo de saída: relatorio.xlsx
 Relatório salvo em: C:\...\relatorio.xlsx
+
+Resumo do que foi feito:
+  Operações executadas: 2
+  1. Filtrar dados (criterios: (Regiao, igual, sul), logico: E)
+  2. SOMASE (coluna_soma: Valor_Total, coluna_criterio: Regiao, criterio: Sul) = 9000.0 (aba Vendas_somase)
 ```
 
-O `relatorio.xlsx` gerado contém, entre outras, as abas `Resumo`,
-`Catalogo_Colunas`, `Qualidade_Dados`, `Historico`, uma aba por dataset
-original (`<nome>_orig`), uma aba por dataset alterado (`<nome>_alt`) e uma
-aba por resultado nomeado (tabelas dinâmicas, PROCH, SOMASE etc.).
+O relatório **resumido** (padrão) traz a aba `Resumo`, a aba
+**`Planilha Atualizada`** (a planilha como ficou depois das ações, com
+as colunas do PROCV, SE etc.; com mais de uma planilha alterada, uma aba
+`Planilha Atualizada - <nome>` para cada), a aba `Operacoes_Executadas` (cada
+opção usada, o que foi feito, o resultado e as linhas antes e depois) e uma aba
+por resultado salvo (tabelas dinâmicas, PROCH, SOMASE etc.).
+
+O relatório **completo** traz também a `Planilha Atualizada`, `Catalogo_Colunas`, `Qualidade_Dados`,
+`Historico` e, para todos os datasets, a versão original (`<nome>_orig`) e a
+alterada (`<nome>_alt`).
+
+Nos dois tipos, a opção 30 pergunta também se deve salvar uma **cópia das
+planilhas já atualizadas** (padrão: sim). Para cada planilha importada que foi
+alterada, ela grava `<nome_do_arquivo>_planilha_atualizada.xlsx` na mesma pasta do relatório, com as
+mesmas abas e na mesma ordem do arquivo original, mas com os dados como
+ficaram depois das operações (colunas do PROCV, SE, filtros etc.). O arquivo
+original não é modificado.
 
 ## Arquitetura (resumo)
 
@@ -173,7 +210,8 @@ aba por resultado nomeado (tabelas dinâmicas, PROCH, SOMASE etc.).
   comuns (`utf-8-sig`, `utf-8`, `cp1252`, `latin-1`); arquivos em
   codificações incomuns podem exigir informar a codificação manualmente.
 - O avaliador seguro de expressões aceita apenas operadores aritméticos,
-  comparações, `E`/`OU` (via `and`/`or` do Python) e um conjunto fixo de
+  comparações, `E`/`OU`/`NÃO` (via `and`/`or`/`not`, ou `&`/`|`/`~` com cada
+  condição entre parênteses) e um conjunto fixo de
   funções (`abs`, `round`, `min`, `max`, `sqrt`, `log`, `log10`, `exp`) —
   expressões mais complexas do Excel não têm equivalente direto.
 - A aplicação é de linha de comando (sem interface gráfica) e de sessão

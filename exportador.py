@@ -12,6 +12,7 @@ tabelas nativas do Excel.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -89,7 +90,8 @@ class _ConstrutorRelatorio:
             serie = df[nome_coluna]
             tamanho_cabecalho = len(str(nome_coluna))
             if len(serie) > 0:
-                tamanho_valores = serie.astype(str).map(len).max()
+                # Vazios contam como 0: no pandas 3 o astype(str) mantém NaN e len() falharia.
+                tamanho_valores = serie.map(lambda valor: 0 if pd.isna(valor) else len(str(valor))).max()
             else:
                 tamanho_valores = 0
             largura = min(max(tamanho_cabecalho, int(tamanho_valores), LARGURA_MINIMA_COLUNA) + 2, LARGURA_MAXIMA_COLUNA)
@@ -120,7 +122,8 @@ class _ConstrutorRelatorio:
                 {
                     "columns": colunas_tabela,
                     "style": "Table Style Medium 9",
-                    "name": f"Tbl_{nome_aba.replace(' ', '_')[:200]}",
+                    # Nome de tabela do Excel só aceita letras, números e "_" (a aba "LEIA-ME" falhava).
+                    "name": f"Tbl_{re.sub(r'[^0-9A-Za-z_]', '_', nome_aba)[:200]}",
                 },
             )
         except Exception as exc:  # noqa: BLE001 - formatação de tabela é best-effort
@@ -207,29 +210,173 @@ def _montar_historico(sessao: Sessao) -> pd.DataFrame:
                 "Linhas (depois)",
                 "Colunas (antes)",
                 "Colunas (depois)",
+                "Resultado",
                 "Avisos",
             ]
         )
     return pd.DataFrame([entrada.como_linha() for entrada in sessao.historico])
 
 
-def gerar_relatorio(sessao: Sessao, caminho_saida: Path) -> Path:
-    """Gera o arquivo ``relatorio.xlsx`` com todas as abas exigidas e retorna o caminho final."""
+def _nome_base_dataset(dataset: Any) -> str:
+    """Nome curto que identifica o dataset numa aba: a aba de origem ou, no CSV, o nome do arquivo."""
+    return str(dataset.aba) if dataset.aba else Path(dataset.arquivo).stem
+
+
+def _nome_aba_com_sufixo(nome_base: str, sufixo: str) -> str:
+    """Encurta o nome base para que o sufixo (``_orig``/``_alt``) caiba nos 31 caracteres do Excel."""
+    return f"{nome_base[: 31 - len(sufixo)]}{sufixo}"
+
+
+def descrever_parametros(parametros: str) -> str:
+    """Deixa os parâmetros gravados no histórico legíveis: ``colunas=['A', 'B']`` vira ``colunas: A, B``."""
+    texto = re.sub(r"\bNone\b", "", str(parametros))
+    texto = re.sub(r"[\[\]'\"]", "", texto)
+    texto = re.sub(r"(\w+)=", r"\1: ", texto)
+    texto = re.sub(r",\s*\)", ")", texto)
+    texto = re.sub(r"\b\w+:\s*(?=,|$)", "", texto)  # parâmetros vazios
+    texto = re.sub(r"(,\s*){2,}", ", ", texto)
+    return re.sub(r"\s{2,}", " ", texto).strip(" ,")
+
+
+def _dataset_foi_alterado(dataset: Any) -> bool:
+    return dataset.origem == "derivado" or not dataset.df.equals(dataset.df_original)
+
+
+def montar_operacoes_executadas(sessao: Sessao) -> pd.DataFrame:
+    """Lista, em ordem, as opções executadas e confirmadas na sessão, em linguagem simples."""
+    linhas = []
+    for numero, entrada in enumerate(sessao.historico, start=1):
+        if entrada.linhas_antes or entrada.colunas_antes:
+            linhas_txt = f"{entrada.linhas_antes} → {entrada.linhas_depois}"
+            colunas_txt = f"{entrada.colunas_antes} → {entrada.colunas_depois}"
+        else:
+            # Resultado salvo ou dataset novo: os dados de origem não mudaram.
+            linhas_txt = colunas_txt = "-"
+        linhas.append(
+            {
+                "#": numero,
+                "Hora": entrada.timestamp.strftime("%H:%M:%S"),
+                "Opção executada": entrada.operacao,
+                "Dataset": entrada.dataset_nome,
+                "O que foi feito": descrever_parametros(entrada.parametros),
+                "Resultado": entrada.resultado,
+                "Linhas": linhas_txt,
+                "Colunas": colunas_txt,
+                "Avisos": entrada.avisos,
+            }
+        )
+    colunas = ["#", "Hora", "Opção executada", "Dataset", "O que foi feito", "Resultado", "Linhas", "Colunas", "Avisos"]
+    return pd.DataFrame(linhas, columns=colunas)
+
+
+def montar_resumo_sessao(sessao: Sessao) -> pd.DataFrame:
+    """Resumo curto do que foi feito na sessão, usado no relatório resumido e na tela."""
+    alterados = [d for d in sessao.listar_datasets() if _dataset_foi_alterado(d)]
+    contagem: dict[str, int] = {}
+    for entrada in sessao.historico:
+        contagem[entrada.operacao] = contagem.get(entrada.operacao, 0) + 1
+    metricas = [
+        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
+        ("Arquivos importados", ", ".join(sorted(set(sessao.arquivos_processados))) or "-"),
+        ("Operações executadas", len(sessao.historico)),
+        ("Opções usadas", ", ".join(f"{nome} ({qtd}x)" for nome, qtd in contagem.items()) or "-"),
+        (
+            "Datasets alterados ou criados",
+            ", ".join(f"{d.identificador_exibicao()} ({len(d.df)} linhas)" for d in alterados) or "nenhum",
+        ),
+        ("Resultados salvos", ", ".join(sessao.resultados) or "nenhum"),
+    ]
+    return pd.DataFrame(metricas, columns=["Item", "Valor"])
+
+
+NOME_ABA_ATUALIZADA = "Planilha Atualizada"
+
+
+def _escrever_planilhas_atualizadas(construtor: "_ConstrutorRelatorio", sessao: Sessao) -> list[str]:
+    """Escreve a aba "Planilha Atualizada": cada dataset alterado ou criado, como ficou no fim.
+
+    Com um único dataset alterado a aba se chama exatamente "Planilha Atualizada";
+    com vários, cada uma leva o nome de origem: "Planilha Atualizada - Vendas".
+    """
+    alterados = [d for d in sessao.listar_datasets() if _dataset_foi_alterado(d)]
+    if len(alterados) == 1:
+        return [construtor.escrever_dataframe(NOME_ABA_ATUALIZADA, alterados[0].df)]
+    bases = [_nome_base_dataset(d) for d in alterados]
+    nomes = []
+    for dataset, nome_base in zip(alterados, bases):
+        if bases.count(nome_base) > 1:
+            nome_base = f"{dataset.id}_{nome_base}"
+        nomes.append(construtor.escrever_dataframe(f"{NOME_ABA_ATUALIZADA} - {nome_base}"[:31], dataset.df))
+    return nomes
+
+
+def _gerar_relatorio_resumido(sessao: Sessao, caminho_saida: Path) -> Path:
+    """Relatório prático: resumo, opções executadas e só os dados que mudaram ou foram calculados."""
+    with pd.ExcelWriter(caminho_saida, engine="xlsxwriter") as writer:
+        construtor = _ConstrutorRelatorio(writer)
+        construtor.escrever_dataframe("Resumo", montar_resumo_sessao(sessao), incluir_tabela_excel=False)
+        _escrever_planilhas_atualizadas(construtor, sessao)
+        construtor.escrever_dataframe("Operacoes_Executadas", montar_operacoes_executadas(sessao))
+        for nome_resultado, df_resultado in sessao.resultados.items():
+            construtor.escrever_dataframe(nome_resultado, df_resultado)
+    logger.info("Relatório resumido gerado em: %s", caminho_saida)
+    return caminho_saida
+
+
+def gerar_copias_finais(sessao: Sessao, pasta: Path, sufixo: str = "_planilha_atualizada") -> list[Path]:
+    """Salva, para cada arquivo importado que foi alterado, uma cópia com o resultado final.
+
+    A cópia tem as mesmas abas do arquivo importado, na mesma ordem e com os
+    mesmos nomes, mas com os dados como ficaram depois das operações. O
+    arquivo original não é alterado. Retorna os caminhos gerados.
+    """
+    pasta.mkdir(parents=True, exist_ok=True)
+    por_arquivo: dict[str, list[Any]] = {}
+    for dataset in sessao.listar_datasets():
+        if dataset.origem == "importado":
+            por_arquivo.setdefault(dataset.arquivo, []).append(dataset)
+    gerados = []
+    for arquivo, datasets in por_arquivo.items():
+        if not any(_dataset_foi_alterado(d) for d in datasets):
+            continue
+        caminho = pasta / f"{Path(arquivo).stem}{sufixo}.xlsx"
+        with pd.ExcelWriter(caminho, engine="xlsxwriter") as writer:
+            construtor = _ConstrutorRelatorio(writer)
+            for dataset in datasets:
+                construtor.escrever_dataframe(str(dataset.aba) if dataset.aba else Path(arquivo).stem, dataset.df)
+        logger.info("Cópia com o resultado final gerada em: %s", caminho)
+        gerados.append(caminho)
+    return gerados
+
+
+def gerar_relatorio(sessao: Sessao, caminho_saida: Path, completo: bool = False) -> Path:
+    """Gera o relatório em Excel e retorna o caminho final.
+
+    O padrão é o relatório resumido (resumo, opções executadas, datasets
+    alterados e resultados). Com ``completo=True`` inclui também catálogo,
+    qualidade dos dados e as versões original e alterada de todos os datasets.
+    """
     caminho_saida.parent.mkdir(parents=True, exist_ok=True)
+    if not completo:
+        return _gerar_relatorio_resumido(sessao, caminho_saida)
 
     with pd.ExcelWriter(caminho_saida, engine="xlsxwriter") as writer:
         construtor = _ConstrutorRelatorio(writer)
 
         construtor.escrever_dataframe("Resumo", _montar_resumo_geral(sessao), incluir_tabela_excel=False)
+        _escrever_planilhas_atualizadas(construtor, sessao)
         construtor.escrever_dataframe("Catalogo_Colunas", _montar_catalogo_colunas_geral(sessao))
         construtor.escrever_dataframe("Qualidade_Dados", _montar_qualidade_geral(sessao))
         construtor.escrever_dataframe("Historico", _montar_historico(sessao))
 
-        for dataset in sessao.listar_datasets():
-            nome_base = f"{Path(dataset.arquivo).stem}_{dataset.aba}" if dataset.aba else Path(dataset.arquivo).stem
-            construtor.escrever_dataframe(f"{nome_base}_orig", dataset.df_original)
+        datasets = sessao.listar_datasets()
+        bases = [_nome_base_dataset(d) for d in datasets]
+        for dataset, nome_base in zip(datasets, bases):
+            if bases.count(nome_base) > 1:
+                nome_base = f"{dataset.id}_{nome_base}"
+            construtor.escrever_dataframe(_nome_aba_com_sufixo(nome_base, "_orig"), dataset.df_original)
             if not dataset.df.equals(dataset.df_original):
-                construtor.escrever_dataframe(f"{nome_base}_alt", dataset.df)
+                construtor.escrever_dataframe(_nome_aba_com_sufixo(nome_base, "_alt"), dataset.df)
 
         for nome_resultado, df_resultado in sessao.resultados.items():
             construtor.escrever_dataframe(nome_resultado, df_resultado)

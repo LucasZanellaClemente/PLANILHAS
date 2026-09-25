@@ -22,7 +22,15 @@ import catalogo
 import exportador
 import operacoes
 from estado import Dataset, HistoricoEntry, Sessao
-from utils import ErroExpressaoInsegura, ErroOperacao, avaliar_condicao_segura, avaliar_expressao_segura, truncar_texto
+from utils import (
+    ErroExpressaoInsegura,
+    ErroOperacao,
+    avaliar_condicao_segura,
+    avaliar_expressao_segura,
+    converter_numero_br,
+    interpretar_valor_digitado,
+    truncar_texto,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +47,7 @@ except ImportError:  # a biblioteca é opcional; há um modo de exibição alter
 # ---------------------------------------------------------------------------
 
 
-def ler_texto(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = None) -> str:
+def ler_texto(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = None, manter_espacos: bool = False) -> str:
     """Lê uma string do usuário, repetindo a pergunta enquanto o campo obrigatório estiver vazio.
 
     Propositalmente não trata ``EOFError``: se a entrada padrão terminar
@@ -48,7 +56,8 @@ def ler_texto(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = N
     em um laço infinito pedindo entradas que nunca chegarão.
     """
     while True:
-        bruto = input(mensagem).strip()
+        # Separadores e textos a substituir podem ser um espaço: aí não se remove nada.
+        bruto = input(mensagem) if manter_espacos else input(mensagem).strip()
         if not bruto and padrao is not None:
             return padrao
         if not bruto and obrigatorio:
@@ -78,15 +87,20 @@ def ler_inteiro(mensagem: str, minimo: Optional[int] = None, maximo: Optional[in
 
 
 def ler_float(mensagem: str, padrao: Optional[float] = None) -> float:
-    """Lê um número decimal do usuário, aceitando vírgula ou ponto."""
+    """Lê um número decimal do usuário no formato brasileiro (1.234,56) ou com ponto decimal (10.5)."""
     while True:
-        bruto = input(mensagem).strip().replace(",", ".")
+        bruto = input(mensagem).strip()
         if not bruto and padrao is not None:
             return padrao
         try:
-            return float(bruto)
+            return converter_numero_br(bruto)
         except ValueError:
             print("Digite um número válido.")
+
+
+def ler_valor(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = None) -> Any:
+    """Lê um valor que pode ser número ou texto: ``100`` e ``0,05`` viram números; use aspas para forçar texto."""
+    return interpretar_valor_digitado(ler_texto(mensagem, obrigatorio=obrigatorio, padrao=padrao))
 
 
 def confirmar(mensagem: str, padrao: bool = False) -> bool:
@@ -155,6 +169,15 @@ def selecionar_colunas_multiplas(df: pd.DataFrame, mensagem: str = "Escolha as c
         else:
             print(f"Índice fora do intervalo ignorado: {indice}")
     return colunas
+
+
+def _nome_curto(dataset: Dataset) -> str:
+    """Nome curto para sugerir nomes de resultado: a aba (Excel) ou o nome do arquivo (CSV).
+
+    As abas do Excel têm no máximo 31 caracteres; com o nome do arquivo na frente
+    o sufixo (``_somase``, ``_pivot``...) era cortado e os resultados ficavam sem nome útil.
+    """
+    return str(dataset.aba) if dataset.aba else dataset.nome
 
 
 def selecionar_dataset(sessao: Sessao, mensagem: str = "Escolha o dataset pelo número") -> Optional[Dataset]:
@@ -374,6 +397,7 @@ def criar_dataset_com_confirmacao(
         colunas_antes=0,
         colunas_depois=df_resultado.shape[1],
         avisos="; ".join(avisos) if avisos else "",
+        resultado=f"novo dataset {nome_sugerido}",
     )
     sessao.registrar_historico(entrada)
     print(f"Novo dataset [{novo_dataset.id}] '{nome_sugerido}' criado com sucesso.")
@@ -401,6 +425,10 @@ def salvar_resultado_com_confirmacao(
         return False
 
     nome_final = sessao.adicionar_resultado(nome_sugerido, df_resultado)
+    if "Resultado" in df_resultado.columns and len(df_resultado) == 1:
+        resumo_resultado = f"{df_resultado['Resultado'].iloc[0]} (aba {nome_final})"
+    else:
+        resumo_resultado = f"aba {nome_final}"
     entrada = HistoricoEntry(
         timestamp=datetime.now(),
         dataset_id=0,
@@ -412,6 +440,7 @@ def salvar_resultado_com_confirmacao(
         colunas_antes=0,
         colunas_depois=df_resultado.shape[1],
         avisos="; ".join(avisos) if avisos else "",
+        resultado=resumo_resultado,
     )
     sessao.registrar_historico(entrada)
     print(f"Resultado salvo como '{nome_final}' para exportação.")
@@ -482,8 +511,15 @@ def handler_filtrar(sessao: Sessao) -> None:
         valor2: Any = None
         if operador not in ("vazio", "nao_vazio"):
             if operador == "em_lista":
-                bruto = ler_texto("Valores (separados por vírgula): ")
-                valor = [v.strip() for v in bruto.split(",")]
+                numerica = pd.api.types.is_numeric_dtype(df[coluna]) and not pd.api.types.is_bool_dtype(df[coluna])
+                if numerica:
+                    # Em colunas numéricas a vírgula é decimal (10,5): a lista usa ponto e vírgula.
+                    bruto = ler_texto("Valores (separados por ponto e vírgula, ex.: 10,5; 20; 1.000): ")
+                    separador_lista = ";"
+                else:
+                    bruto = ler_texto("Valores (separados por vírgula ou ponto e vírgula): ")
+                    separador_lista = ";" if ";" in bruto else ","
+                valor = [v.strip() for v in bruto.split(separador_lista) if v.strip()]
             elif operador == "entre":
                 valor = ler_texto("Valor inicial: ")
                 valor2 = ler_texto("Valor final: ")
@@ -497,7 +533,13 @@ def handler_filtrar(sessao: Sessao) -> None:
         return
     operador_logico = "E"
     if len(criterios) > 1:
-        operador_logico = ler_texto("Combinar critérios com E ou OU: ", padrao="E").upper()
+        sinonimos = {"E": "E", "AND": "E", "OU": "OU", "OR": "OU"}
+        while True:
+            resposta = ler_texto("Combinar critérios com E ou OU: ", padrao="E").upper()
+            if resposta in sinonimos:
+                operador_logico = sinonimos[resposta]
+                break
+            print("Digite E (todos os critérios) ou OU (qualquer critério).")
     try:
         resultado = operacoes.aplicar_filtros(df, criterios, operador_logico)
     except ErroOperacao as exc:
@@ -628,13 +670,13 @@ def handler_coluna_calculada(sessao: Sessao) -> None:
         elif escolha == "3":
             condicao_texto = ler_texto("Expressão da condição (ex.: preco > 100): ")
             condicao = avaliar_condicao_segura(condicao_texto, df)
-            valor_v = ler_texto("Valor se verdadeiro: ")
-            valor_f = ler_texto("Valor se falso: ")
+            valor_v = ler_valor("Valor se verdadeiro: ")
+            valor_f = ler_valor("Valor se falso: ")
             resultado = operacoes.criar_coluna_condicional(df, nova_coluna, condicao, valor_v, valor_f)
             parametros = f"condicao={condicao_texto}, verdadeiro={valor_v}, falso={valor_f}"
         elif escolha == "4":
             colunas = selecionar_colunas_multiplas(df, "Colunas a concatenar")
-            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="")
+            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="", manter_espacos=True)
             resultado = operacoes.criar_coluna_concatenacao(df, nova_coluna, colunas, separador)
             parametros = f"colunas={colunas}, separador='{separador}'"
         elif escolha == "5":
@@ -659,7 +701,7 @@ def handler_coluna_calculada(sessao: Sessao) -> None:
             resultado = operacoes.criar_coluna_diferenca_datas(df, nova_coluna, inicio, fim, unidade)
             parametros = f"inicio={inicio}, fim={fim}, unidade={unidade}"
         elif escolha == "7":
-            valor = ler_texto("Valor fixo: ")
+            valor = ler_valor("Valor fixo: ")
             resultado = operacoes.criar_coluna_valor_fixo(df, nova_coluna, valor)
             parametros = f"valor={valor}"
         else:
@@ -741,14 +783,14 @@ def handler_texto(sessao: Sessao) -> None:
     try:
         if operacao_texto == "concatenar":
             colunas = selecionar_colunas_multiplas(df, "Colunas a concatenar")
-            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="")
+            separador = ler_texto("Separador (Enter para nenhum): ", obrigatorio=False, padrao="", manter_espacos=True)
             nova_coluna = ler_texto("Nome da nova coluna: ")
             resultado = df.copy()
             resultado[nova_coluna] = operacoes.texto_concatenar(df, colunas, separador)
             parametros = f"colunas={colunas}, separador='{separador}'"
         elif operacao_texto == "separar":
             coluna = selecionar_coluna(df, "Coluna a separar")
-            delimitador = ler_texto("Delimitador: ")
+            delimitador = ler_texto("Delimitador: ", manter_espacos=True)
             expandido = operacoes.texto_separar(df[coluna], delimitador)
             expandido.columns = [f"{coluna}_{c}" for c in expandido.columns]
             resultado = pd.concat([df.reset_index(drop=True), expandido.reset_index(drop=True)], axis=1)
@@ -765,12 +807,12 @@ def handler_texto(sessao: Sessao) -> None:
                 serie = operacoes.texto_direita(df[coluna], quantidade)
                 parametros = f"coluna={coluna}, n={quantidade}"
             elif operacao_texto == "localizar":
-                subtexto = ler_texto("Texto a localizar: ")
+                subtexto = ler_texto("Texto a localizar: ", manter_espacos=True)
                 serie = operacoes.texto_localizar(df[coluna], subtexto)
                 parametros = f"coluna={coluna}, subtexto='{subtexto}'"
             elif operacao_texto == "substituir":
-                antigo = ler_texto("Texto a substituir: ")
-                novo = ler_texto("Novo texto: ", obrigatorio=False, padrao="")
+                antigo = ler_texto("Texto a substituir: ", manter_espacos=True)
+                novo = ler_texto("Novo texto: ", obrigatorio=False, padrao="", manter_espacos=True)
                 serie = operacoes.texto_substituir(df[coluna], antigo, novo)
                 parametros = f"coluna={coluna}, antigo='{antigo}', novo='{novo}'"
             elif operacao_texto == "remover_espacos":
@@ -895,7 +937,7 @@ def handler_agrupar(sessao: Sessao) -> None:
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
-    nome_sugerido = ler_texto("Nome para o novo dataset resumido: ", padrao=f"{dataset.nome}_resumo")
+    nome_sugerido = ler_texto("Nome para o novo dataset resumido: ", padrao=f"{_nome_curto(dataset)}_resumo")
     criar_dataset_com_confirmacao(
         sessao, nome_sugerido, resultado, "Agrupar e resumir", f"grupo={colunas_grupo}, agregacoes={agregacoes}", dataset.identificador_exibicao()
     )
@@ -928,7 +970,7 @@ def handler_pivot(sessao: Sessao) -> None:
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
-    nome_resultado = ler_texto("Nome para esta tabela dinâmica: ", padrao=f"{dataset.nome}_pivot")
+    nome_resultado = ler_texto("Nome para esta tabela dinâmica: ", padrao=f"{_nome_curto(dataset)}_pivot")
     salvar_resultado_com_confirmacao(
         sessao,
         nome_resultado,
@@ -937,6 +979,19 @@ def handler_pivot(sessao: Sessao) -> None:
         f"linhas={linhas}, colunas={colunas_pivot}, valores={valores}, funcao={funcao}, preencher={preencher}, totais={totais}",
         dataset.identificador_exibicao(),
     )
+
+
+def _perguntar_coluna_existente(df_principal: pd.DataFrame, colunas_retorno: list[str]) -> str:
+    """Pergunta o que fazer quando uma coluna de retorno já existe no dataset principal."""
+    existentes = [c for c in colunas_retorno if c in df_principal.columns]
+    if not existentes:
+        return "nova"
+    print(f"A(s) coluna(s) {', '.join(existentes)} já existe(m) no dataset principal.")
+    print("  1. Substituir pelos valores encontrados (linhas sem correspondência ficam como estão)")
+    print("  2. Preencher só as células vazias")
+    print("  3. Criar uma coluna nova (com sufixo)")
+    escolha = ler_inteiro("O que fazer: ", minimo=1, maximo=3, padrao=1)
+    return {1: "substituir", 2: "preencher_vazios", 3: "nova"}[escolha]
 
 
 def handler_procv(sessao: Sessao) -> None:
@@ -955,9 +1010,14 @@ def handler_procv(sessao: Sessao) -> None:
     if not colunas_retorno:
         print("Selecione ao menos uma coluna de retorno.")
         return
-    sufixo = ler_texto("Sufixo para colunas em caso de conflito de nomes: ", padrao="_procv")
+    modo_existente = _perguntar_coluna_existente(principal.df, colunas_retorno)
+    sufixo = "_procv"
+    if modo_existente == "nova" and any(c in principal.df.columns for c in colunas_retorno):
+        sufixo = ler_texto("Sufixo para as colunas novas: ", padrao="_procv")
     try:
-        resultado = operacoes.executar_procv(principal.df, consulta.df, chave_principal, chave_consulta, colunas_retorno, sufixo)
+        resultado = operacoes.executar_procv(
+            principal.df, consulta.df, chave_principal, chave_consulta, colunas_retorno, sufixo, modo_existente
+        )
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
@@ -989,7 +1049,7 @@ def handler_proch(sessao: Sessao) -> None:
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
         return
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_proch")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_proch")
     salvar_resultado_com_confirmacao(
         sessao,
         nome_resultado,
@@ -1017,16 +1077,25 @@ def handler_procx(sessao: Sessao) -> None:
     if not colunas_retorno:
         print("Selecione ao menos uma coluna de retorno.")
         return
+    modo_existente = _perguntar_coluna_existente(principal.df, colunas_retorno)
     modo = ler_texto("Modo de correspondência (exata/aproximada): ", padrao="exata")
     ocorrencia = "primeira"
     valor_nao_encontrado = None
     if modo == "exata":
         ocorrencia = ler_texto("Em caso de múltiplas ocorrências, usar (primeira/ultima): ", padrao="primeira")
-        if confirmar("Deseja definir um valor para quando não houver correspondência?", padrao=False):
-            valor_nao_encontrado = ler_texto("Valor para 'não encontrado': ")
+    if confirmar("Deseja definir um valor para quando não houver correspondência?", padrao=False):
+        valor_nao_encontrado = ler_valor("Valor para 'não encontrado': ")
     try:
         resultado = operacoes.executar_procx(
-            principal.df, consulta.df, coluna_busca_principal, coluna_busca_consulta, colunas_retorno, modo, ocorrencia, valor_nao_encontrado
+            principal.df,
+            consulta.df,
+            coluna_busca_principal,
+            coluna_busca_consulta,
+            colunas_retorno,
+            modo,
+            ocorrencia,
+            valor_nao_encontrado,
+            modo_existente,
         )
     except ErroOperacao as exc:
         print(f"Erro: {exc}")
@@ -1060,7 +1129,7 @@ def handler_somase(sessao: Sessao) -> None:
         return
     print(f"\nResultado SOMASE: {valor}")
     resultado_df = pd.DataFrame([{"Função": "SOMASE", "Coluna soma": coluna_soma, "Critério": f"{coluna_criterio} {criterio}", "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_somase")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_somase")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "SOMASE", f"coluna_soma={coluna_soma}, coluna_criterio={coluna_criterio}, criterio={criterio}",
         dataset.identificador_exibicao(),
@@ -1085,7 +1154,7 @@ def handler_somases(sessao: Sessao) -> None:
         return
     print(f"\nResultado SOMASES: {valor}")
     resultado_df = pd.DataFrame([{"Função": "SOMASES", "Coluna soma": coluna_soma, "Critérios": str(pares), "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_somases")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_somases")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "SOMASES", f"coluna_soma={coluna_soma}, criterios={pares}", dataset.identificador_exibicao()
     )
@@ -1106,7 +1175,7 @@ def handler_contse(sessao: Sessao) -> None:
         return
     print(f"\nResultado CONT.SE: {valor}")
     resultado_df = pd.DataFrame([{"Função": "CONT.SE", "Critério": f"{coluna_criterio} {criterio}", "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_contse")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_contse")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "CONT.SE", f"coluna_criterio={coluna_criterio}, criterio={criterio}", dataset.identificador_exibicao()
     )
@@ -1129,7 +1198,7 @@ def handler_contses(sessao: Sessao) -> None:
         return
     print(f"\nResultado CONT.SES: {valor}")
     resultado_df = pd.DataFrame([{"Função": "CONT.SES", "Critérios": str(pares), "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_contses")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_contses")
     salvar_resultado_com_confirmacao(sessao, nome_resultado, resultado_df, "CONT.SES", f"criterios={pares}", dataset.identificador_exibicao())
 
 
@@ -1149,7 +1218,7 @@ def handler_mediase(sessao: Sessao) -> None:
         return
     print(f"\nResultado MÉDIASE: {valor}")
     resultado_df = pd.DataFrame([{"Função": "MÉDIASE", "Coluna média": coluna_media, "Critério": f"{coluna_criterio} {criterio}", "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_mediase")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_mediase")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "MÉDIASE", f"coluna_media={coluna_media}, coluna_criterio={coluna_criterio}, criterio={criterio}",
         dataset.identificador_exibicao(),
@@ -1174,7 +1243,7 @@ def handler_mediases(sessao: Sessao) -> None:
         return
     print(f"\nResultado MÉDIASES: {valor}")
     resultado_df = pd.DataFrame([{"Função": "MÉDIASES", "Coluna média": coluna_media, "Critérios": str(pares), "Resultado": valor}])
-    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{dataset.nome}_mediases")
+    nome_resultado = ler_texto("Nome para salvar este resultado: ", padrao=f"{_nome_curto(dataset)}_mediases")
     salvar_resultado_com_confirmacao(
         sessao, nome_resultado, resultado_df, "MÉDIASES", f"coluna_media={coluna_media}, criterios={pares}", dataset.identificador_exibicao()
     )
@@ -1186,14 +1255,14 @@ def handler_se(sessao: Sessao) -> None:
     if dataset is None:
         return
     df = dataset.df
-    condicao_texto = ler_texto("Condição (ex.: idade >= 18): ")
+    condicao_texto = ler_texto("Condição (ex.: idade >= 18 and cidade == \"Sul\"): ")
     try:
         condicao = avaliar_condicao_segura(condicao_texto, df)
     except ErroExpressaoInsegura as exc:
         print(f"Erro: {exc}")
         return
-    valor_v = ler_texto("Valor se verdadeiro: ")
-    valor_f = ler_texto("Valor se falso: ")
+    valor_v = ler_valor("Valor se verdadeiro: ")
+    valor_f = ler_valor("Valor se falso: ")
     nova_coluna = ler_texto("Nome da nova coluna: ")
     resultado = operacoes.funcao_se(df, nova_coluna, condicao, valor_v, valor_f)
     aplicar_com_confirmacao(sessao, dataset, resultado, "SE", f"condicao={condicao_texto}, verdadeiro={valor_v}, falso={valor_f}")
@@ -1218,14 +1287,14 @@ def handler_se_aninhado(sessao: Sessao) -> None:
         except ErroExpressaoInsegura as exc:
             print(f"Erro: {exc}")
             continue
-        valor = ler_texto(f"Valor se '{condicao_texto}' for verdadeira: ")
+        valor = ler_valor(f"Valor se '{condicao_texto}' for verdadeira: ")
         condicoes_texto.append(condicao_texto)
         condicoes.append(condicao)
         valores.append(valor)
     if not condicoes:
         print("Nenhuma condição informada.")
         return
-    valor_padrao = ler_texto("Valor padrão (se nenhuma condição for verdadeira): ")
+    valor_padrao = ler_valor("Valor padrão (se nenhuma condição for verdadeira): ")
     nova_coluna = ler_texto("Nome da nova coluna: ")
     try:
         resultado = operacoes.funcao_se_aninhado(df, nova_coluna, condicoes, valores, valor_padrao)
@@ -1256,7 +1325,11 @@ def handler_nulos(sessao: Sessao) -> None:
                 print("Selecione ao menos uma coluna.")
                 return
             metodo = ler_texto("Método (valor/media/mediana/moda/zero/texto): ")
-            valor = ler_texto("Valor a utilizar: ") if metodo in ("valor", "texto") else None
+            valor = None
+            if metodo == "valor":
+                valor = ler_valor("Valor a utilizar: ")
+            elif metodo == "texto":
+                valor = ler_texto("Valor a utilizar: ")
             resultado = operacoes.preencher_nulos(df, colunas, metodo, valor)
             parametros, nome_op = f"colunas={colunas}, metodo={metodo}, valor={valor}", "Preencher valores nulos"
         else:
@@ -1398,6 +1471,12 @@ def handler_salvar(sessao: Sessao) -> None:
     if not sessao.datasets:
         print("Nenhum dataset carregado; não há o que exportar.")
         return
+    print("  1. Resumido: resumo, opções executadas e os dados que mudaram ou foram calculados")
+    print("  2. Completo: inclui também catálogo, qualidade e todas as abas originais")
+    completo = ler_inteiro("Tipo de relatório: ", minimo=1, maximo=2, padrao=1) == 2
+    salvar_copias = confirmar(
+        "Salvar também uma cópia das planilhas importadas já atualizadas (arquivo_planilha_atualizada.xlsx)?", padrao=True
+    )
     caminho = Path(ler_texto("Nome do arquivo de saída: ", padrao="relatorio.xlsx"))
     if not caminho.suffix:
         caminho = caminho.with_suffix(".xlsx")
@@ -1406,9 +1485,29 @@ def handler_salvar(sessao: Sessao) -> None:
             caminho = exportador.gerar_nome_com_timestamp(caminho)
             print(f"Um novo nome será utilizado: {caminho}")
     try:
-        caminho_final = exportador.gerar_relatorio(sessao, caminho)
+        caminho_final = exportador.gerar_relatorio(sessao, caminho, completo=completo)
     except Exception as exc:  # noqa: BLE001 - qualquer falha na exportação não deve encerrar o programa
         print(f"Erro ao gerar o relatório: {exc}")
         logger.exception("Falha ao gerar relatório")
         return
     print(f"Relatório salvo em: {caminho_final.resolve()}")
+    if any(exportador._dataset_foi_alterado(d) for d in sessao.listar_datasets()):
+        print("A aba 'Planilha Atualizada' do relatório mostra como a planilha ficou depois das ações.")
+    if salvar_copias:
+        try:
+            copias = exportador.gerar_copias_finais(sessao, caminho_final.parent)
+        except Exception as exc:  # noqa: BLE001 - o relatório já foi salvo; só a cópia falhou
+            print(f"Erro ao salvar a planilha atualizada: {exc}")
+            logger.exception("Falha ao gerar cópia final")
+            copias = []
+        for copia in copias:
+            print(f"Planilha atualizada salva em: {copia.resolve()}")
+        if not copias:
+            print("Nenhuma planilha importada foi alterada; não há planilha atualizada para salvar.")
+    print("\nResumo do que foi feito:")
+    for _, linha in exportador.montar_resumo_sessao(sessao).iterrows():
+        print(f"  {linha['Item']}: {linha['Valor']}")
+    operacoes_feitas = exportador.montar_operacoes_executadas(sessao)
+    for _, linha in operacoes_feitas.iterrows():
+        resultado = f" = {linha['Resultado']}" if linha["Resultado"] else ""
+        print(f"  {linha['#']}. {linha['Opção executada']} ({linha['O que foi feito']}){resultado}")

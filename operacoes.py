@@ -19,7 +19,14 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
-from utils import ErroOperacao, curinga_para_regex
+from utils import (
+    ErroOperacao,
+    arredondar_excel,
+    converter_datas_br,
+    converter_numero_br,
+    curinga_para_regex,
+    normalizar_chave_busca,
+)
 
 # ---------------------------------------------------------------------------
 # Utilidades de validação
@@ -84,6 +91,16 @@ class Criterio:
     valor2: Any = None
 
 
+def _normalizar_texto(valor: Any) -> str:
+    """Normaliza um texto para comparação: sem espaços nas pontas e sem diferenciar maiúsculas."""
+    return str(valor).strip().casefold()
+
+
+def _normalizar_serie_texto(serie: pd.Series) -> pd.Series:
+    """Versão vetorizada de :func:`_normalizar_texto` para uma coluna inteira."""
+    return serie.astype(str).str.strip().str.casefold()
+
+
 def construir_mascara(df: pd.DataFrame, criterio: Criterio) -> pd.Series:
     """Constrói a máscara booleana correspondente a um único critério de filtro."""
     validar_colunas(df, [criterio.coluna])
@@ -98,16 +115,36 @@ def construir_mascara(df: pd.DataFrame, criterio: Criterio) -> pd.Series:
 
     if criterio.operador == "em_lista":
         valores = criterio.valor if isinstance(criterio.valor, (list, tuple, set)) else [criterio.valor]
-        return serie.isin(valores)
+        if pd.api.types.is_numeric_dtype(serie) and not pd.api.types.is_bool_dtype(serie):
+            numeros = []
+            for valor in valores:
+                try:
+                    numeros.append(converter_numero_br(valor))
+                except (TypeError, ValueError):
+                    continue
+            return serie.isin(numeros)
+        if pd.api.types.is_datetime64_any_dtype(serie):
+            return serie.isin(converter_datas_br(pd.Series(list(valores))).dropna())
+        alvos = {_normalizar_texto(v) for v in valores}
+        return serie.notna() & _normalizar_serie_texto(serie).isin(alvos)
 
     if criterio.operador == "entre":
         inicio, fim = criterio.valor, criterio.valor2
+        if pd.api.types.is_datetime64_any_dtype(serie):
+            inicio_data, fim_data = converter_datas_br(inicio), converter_datas_br(fim)
+            if pd.isna(inicio_data) or pd.isna(fim_data):
+                raise ErroOperacao(f"Informe datas válidas (dd/mm/aaaa) para filtrar '{criterio.coluna}'.")
+            return serie.between(min(inicio_data, fim_data), max(inicio_data, fim_data))
         try:
-            serie_num = pd.to_numeric(serie, errors="coerce")
-            inicio_num, fim_num = float(inicio), float(fim)
-            return serie_num.between(min(inicio_num, fim_num), max(inicio_num, fim_num))
+            inicio_num, fim_num = converter_numero_br(inicio), converter_numero_br(fim)
         except (TypeError, ValueError):
+            if pd.api.types.is_numeric_dtype(serie):
+                raise ErroOperacao(
+                    f"Os valores '{inicio}' e '{fim}' não são compatíveis com a coluna numérica '{criterio.coluna}'."
+                ) from None
             return serie.astype(str).between(str(inicio), str(fim))
+        serie_num = pd.to_numeric(serie, errors="coerce")
+        return serie_num.between(min(inicio_num, fim_num), max(inicio_num, fim_num))
 
     if criterio.operador in ("contem", "nao_contem", "comeca_com", "termina_com"):
         serie_texto = serie.astype(str)
@@ -124,16 +161,23 @@ def construir_mascara(df: pd.DataFrame, criterio: Criterio) -> pd.Series:
 
     # Operadores de comparação: tenta numérico, cai para texto/data se necessário.
     valor_comparacao = criterio.valor
+    texto_livre = False
     if pd.api.types.is_numeric_dtype(serie):
         try:
-            valor_comparacao = float(criterio.valor)
+            valor_comparacao = converter_numero_br(criterio.valor)
         except (TypeError, ValueError):
             raise ErroOperacao(
                 f"O valor '{criterio.valor}' não é compatível com a coluna numérica '{criterio.coluna}'."
             ) from None
     elif pd.api.types.is_datetime64_any_dtype(serie):
-        valor_comparacao = pd.to_datetime(criterio.valor, errors="coerce")
+        valor_comparacao = converter_datas_br(criterio.valor)
+    else:
+        texto_livre = True
 
+    if criterio.operador in ("igual", "diferente") and texto_livre:
+        # Texto: ignora maiúsculas/minúsculas e espaços nas pontas, como o SOMASE/CONT.SE.
+        iguais = serie.notna() & (_normalizar_serie_texto(serie) == _normalizar_texto(criterio.valor))
+        return iguais if criterio.operador == "igual" else ~iguais
     if criterio.operador == "igual":
         return serie == valor_comparacao
     if criterio.operador == "diferente":
@@ -151,6 +195,8 @@ def aplicar_filtros(df: pd.DataFrame, criterios: list[Criterio], operador_logico
     """Aplica uma lista de critérios combinados com E (AND) ou OU (OR)."""
     if not criterios:
         raise ErroOperacao("Informe ao menos um critério de filtro.")
+    if operador_logico.upper() not in ("E", "OU"):
+        raise ErroOperacao(f"Combinação desconhecida: '{operador_logico}'. Use E ou OU.")
     mascaras = [construir_mascara(df, c) for c in criterios]
     mascara_final = mascaras[0]
     for mascara in mascaras[1:]:
@@ -249,12 +295,25 @@ def criar_coluna_percentual(
     return resultado
 
 
+def _valores_por_condicao(indice: pd.Index, condicoes: list[pd.Series], valores: list[Any], valor_padrao: Any) -> pd.Series:
+    """Aplica a primeira condição verdadeira de cada linha, mantendo o tipo de cada valor.
+
+    ``np.where``/``np.select`` transformariam tudo em texto ao misturar número e
+    texto (``100`` e ``"Baixo"`` viram ``"100"`` e ``"Baixo"``).
+    """
+    resultado = pd.Series([valor_padrao] * len(indice), index=indice, dtype=object)
+    for condicao, valor in reversed(list(zip(condicoes, valores))):
+        mascara = pd.Series(np.asarray(condicao, dtype=bool), index=indice)
+        resultado = resultado.mask(mascara, valor)
+    return resultado.infer_objects()
+
+
 def criar_coluna_condicional(
     df: pd.DataFrame, nova_coluna: str, condicao: pd.Series, valor_verdadeiro: Any, valor_falso: Any
 ) -> pd.DataFrame:
     """Cria uma coluna a partir de uma condição booleana já calculada (ver módulo ``utils``)."""
     resultado = df.copy()
-    resultado[nova_coluna] = np.where(condicao, valor_verdadeiro, valor_falso)
+    resultado[nova_coluna] = _valores_por_condicao(df.index, [condicao], [valor_verdadeiro], valor_falso)
     return resultado
 
 
@@ -286,23 +345,44 @@ def criar_coluna_expressao(df: pd.DataFrame, nova_coluna: str, valores: pd.Serie
     return resultado
 
 
+def _meses_completos(inicio: pd.Series, fim: pd.Series) -> pd.Series:
+    """Meses completos entre duas datas, como o DATADIF(...; "m") do Excel.
+
+    31/12/2025 → 01/01/2026 dá 0 (o mês não se completou); 15/01 → 15/02 dá 1.
+    Se a data final for anterior à inicial, o resultado é negativo.
+    """
+    def contar(de: pd.Series, ate: pd.Series) -> pd.Series:
+        meses = (ate.dt.year - de.dt.year) * 12 + (ate.dt.month - de.dt.month)
+        return meses - (ate.dt.day < de.dt.day).astype(int)
+
+    invertido = fim < inicio
+    positivo = contar(inicio.where(~invertido, fim), fim.where(~invertido, inicio))
+    return positivo.where(~invertido, -positivo).astype("Int64")
+
+
+def _anos_completos(inicio: pd.Series, fim: pd.Series) -> pd.Series:
+    """Anos completos entre duas datas, como o DATADIF(...; "y") do Excel."""
+    meses = _meses_completos(inicio, fim)
+    return (meses.abs() // 12) * np.sign(meses)
+
+
 def criar_coluna_diferenca_datas(
     df: pd.DataFrame, nova_coluna: str, coluna_inicio: str, coluna_fim: str, unidade: str = "dias"
 ) -> pd.DataFrame:
     """Cria uma coluna com a diferença entre duas colunas de data."""
     validar_colunas(df, [coluna_inicio, coluna_fim])
     resultado = df.copy()
-    inicio = pd.to_datetime(df[coluna_inicio], errors="coerce")
-    fim = pd.to_datetime(df[coluna_fim], errors="coerce")
+    inicio = converter_datas_br(df[coluna_inicio])
+    fim = converter_datas_br(df[coluna_fim])
     diferenca = fim - inicio
     if unidade == "dias":
         resultado[nova_coluna] = diferenca.dt.days
     elif unidade == "horas":
         resultado[nova_coluna] = diferenca / pd.Timedelta(hours=1)
     elif unidade == "meses":
-        resultado[nova_coluna] = (fim.dt.year - inicio.dt.year) * 12 + (fim.dt.month - inicio.dt.month)
+        resultado[nova_coluna] = _meses_completos(inicio, fim)
     elif unidade == "anos":
-        resultado[nova_coluna] = fim.dt.year - inicio.dt.year
+        resultado[nova_coluna] = _anos_completos(inicio, fim)
     else:
         raise ErroOperacao(f"Unidade desconhecida: '{unidade}'. Use dias, horas, meses ou anos.")
     return resultado
@@ -343,7 +423,7 @@ def aplicar_operacao_matematica(
         resultado[nova_coluna] = np.log(serie)
     elif operacao == "arredondar":
         casas = int(parametro) if parametro is not None else 0
-        resultado[nova_coluna] = serie.round(casas)
+        resultado[nova_coluna] = arredondar_excel(serie, casas)
     elif operacao == "absoluto":
         resultado[nova_coluna] = serie.abs()
     else:
@@ -429,7 +509,7 @@ def data_converter(serie: pd.Series, formato: Optional[str] = None) -> pd.Series
     """Converte uma coluna para o tipo data de forma segura, com valores inválidos viram NaT."""
     if formato:
         return pd.to_datetime(serie, format=formato, errors="coerce")
-    return pd.to_datetime(serie, errors="coerce", format="mixed")
+    return converter_datas_br(serie)
 
 
 _COMPONENTES_DATA: dict[str, Callable[[pd.Series], pd.Series]] = {
@@ -456,9 +536,9 @@ def data_diferenca(serie_inicio: pd.Series, serie_fim: pd.Series, unidade: str =
     if unidade == "horas":
         return diferenca / pd.Timedelta(hours=1)
     if unidade == "meses":
-        return (serie_fim.dt.year - serie_inicio.dt.year) * 12 + (serie_fim.dt.month - serie_inicio.dt.month)
+        return _meses_completos(serie_inicio, serie_fim)
     if unidade == "anos":
-        return serie_fim.dt.year - serie_inicio.dt.year
+        return _anos_completos(serie_inicio, serie_fim)
     raise ErroOperacao(f"Unidade desconhecida: '{unidade}'.")
 
 
@@ -531,6 +611,9 @@ def criar_tabela_dinamica(
         fill_value=preencher_vazios,
         margins=totais_gerais,
         margins_name="Total Geral",
+        # Com dropna=True o pandas descarta, antes do Total Geral, toda linha que tenha
+        # algum vazio em qualquer coluna de valores, e some com grupos de chave vazia.
+        dropna=False,
     )
     if isinstance(tabela.columns, pd.MultiIndex):
         tabela.columns = [" | ".join(str(nivel) for nivel in tupla if str(nivel) != "") for tupla in tabela.columns]
@@ -550,6 +633,47 @@ class ResultadoBusca:
     avisos: list[str] = field(default_factory=list)
 
 
+MODOS_COLUNA_EXISTENTE = ("nova", "substituir", "preencher_vazios")
+
+
+def _gravar_coluna_retorno(
+    resultado: pd.DataFrame,
+    coluna: str,
+    valores: pd.Series,
+    encontrado: pd.Series,
+    modo: str,
+    sufixo: str,
+    valor_nao_encontrado: Any = None,
+) -> str:
+    """Grava o retorno de uma busca e devolve um aviso descrevendo o que foi feito.
+
+    Quando a coluna já existe no dataset principal, ``modo`` decide:
+
+    * ``substituir``: copia o valor encontrado para a coluna existente; linhas
+      sem correspondência mantêm o valor que já tinham;
+    * ``preencher_vazios``: só preenche as células vazias da coluna existente;
+    * ``nova``: cria outra coluna com o sufixo (``Categoria_procv``).
+    """
+    if modo not in MODOS_COLUNA_EXISTENTE:
+        raise ErroOperacao(f"Modo desconhecido para coluna existente: '{modo}'.")
+    if coluna not in resultado.columns or modo == "nova":
+        nome = coluna if coluna not in resultado.columns else f"{coluna}{sufixo}"
+        novos = valores.where(encontrado)
+        if valor_nao_encontrado is not None:
+            novos = novos.where(encontrado, valor_nao_encontrado)
+        resultado[nome] = novos
+        return ""
+    atual = resultado[coluna]
+    alvo = encontrado if modo == "substituir" else (encontrado & atual.isna())
+    novos = atual.astype(object).mask(alvo, valores)
+    if valor_nao_encontrado is not None:
+        sem_valor = ~encontrado if modo == "substituir" else (~encontrado & atual.isna())
+        novos = novos.mask(sem_valor, valor_nao_encontrado)
+    resultado[coluna] = novos.infer_objects()
+    acao = "substituída" if modo == "substituir" else "preenchida (só células vazias)"
+    return f"Coluna existente '{coluna}' {acao} em {int(alvo.sum())} linha(s)."
+
+
 def executar_procv(
     df_principal: pd.DataFrame,
     df_consulta: pd.DataFrame,
@@ -557,6 +681,7 @@ def executar_procv(
     chave_consulta: str,
     colunas_retorno: list[str],
     sufixo: str = "_procv",
+    modo_coluna_existente: str = "nova",
 ) -> ResultadoBusca:
     """Reproduz o comportamento do PROCV (correspondência exata) via ``pandas.merge``."""
     validar_colunas(df_principal, [chave_principal])
@@ -564,7 +689,11 @@ def executar_procv(
 
     avisos: list[str] = []
 
-    duplicadas = df_consulta[chave_consulta].duplicated().sum()
+    # Chaves normalizadas: 1, 1.0 e "1" batem; texto sem diferenciar maiúsculas nem
+    # espaços nas pontas (como o PROCV do Excel); vazio nunca encontra correspondência.
+    coluna_auxiliar = "__chave_comparacao__"
+    chaves_consulta = df_consulta[chave_consulta].map(normalizar_chave_busca)
+    duplicadas = int(chaves_consulta.dropna().duplicated().sum())
     if duplicadas > 0:
         avisos.append(
             f"A tabela de consulta possui {duplicadas} chave(s) duplicada(s) em '{chave_consulta}'; "
@@ -575,50 +704,28 @@ def executar_procv(
     tipo_consulta = df_consulta[chave_consulta].dtype
     if tipo_principal != tipo_consulta:
         avisos.append(
-            f"Tipos de chave incompatíveis ('{chave_principal}': {tipo_principal} x "
-            f"'{chave_consulta}': {tipo_consulta}). As chaves serão comparadas como texto."
+            f"Tipos de chave diferentes ('{chave_principal}': {tipo_principal} x "
+            f"'{chave_consulta}': {tipo_consulta}). Números iguais e textos iguais foram considerados correspondentes."
         )
 
-    df_esquerda = df_principal.copy()
-    df_direita = df_consulta[[chave_consulta] + colunas_retorno].drop_duplicates(subset=[chave_consulta], keep="first").copy()
+    tabela = df_consulta[colunas_retorno].copy()
+    tabela[coluna_auxiliar] = chaves_consulta
+    tabela = tabela[tabela[coluna_auxiliar].notna()].drop_duplicates(subset=[coluna_auxiliar], keep="first")
+    tabela = tabela.set_index(coluna_auxiliar)
+    chaves_principal = df_principal[chave_principal].map(normalizar_chave_busca)
+    encontrado = chaves_principal.isin(tabela.index)
 
-    coluna_auxiliar_esq = None
-    coluna_auxiliar_dir = None
-    if tipo_principal != tipo_consulta:
-        coluna_auxiliar_esq = "__chave_comparacao__"
-        coluna_auxiliar_dir = "__chave_comparacao__"
-        df_esquerda[coluna_auxiliar_esq] = df_esquerda[chave_principal].astype(str)
-        df_direita[coluna_auxiliar_dir] = df_direita[chave_consulta].astype(str)
-        chave_merge_esquerda, chave_merge_direita = coluna_auxiliar_esq, coluna_auxiliar_dir
-    else:
-        chave_merge_esquerda, chave_merge_direita = chave_principal, chave_consulta
-
-    linhas_antes = len(df_esquerda)
-    resultado = df_esquerda.merge(
-        df_direita,
-        left_on=chave_merge_esquerda,
-        right_on=chave_merge_direita,
-        how="left",
-        suffixes=("", sufixo),
-    )
-
-    if coluna_auxiliar_esq:
-        resultado = resultado.drop(columns=[coluna_auxiliar_esq])
-    if chave_consulta != chave_principal and chave_consulta in resultado.columns and chave_consulta not in df_principal.columns:
-        resultado = resultado.drop(columns=[chave_consulta])
-
-    if len(resultado) != linhas_antes:
-        avisos.append(
-            f"A junção alterou a quantidade de linhas: {linhas_antes} antes, {len(resultado)} depois."
-        )
-
+    resultado = df_principal.copy()
     for coluna in colunas_retorno:
-        nome_final = coluna if coluna not in df_principal.columns else f"{coluna}{sufixo}"
-        nome_final = nome_final if nome_final in resultado.columns else coluna
-        if nome_final in resultado.columns:
-            sem_correspondencia = resultado[nome_final].isna().sum()
-            if sem_correspondencia > 0:
-                avisos.append(f"{sem_correspondencia} linha(s) sem correspondência para a coluna '{coluna}'.")
+        aviso = _gravar_coluna_retorno(
+            resultado, coluna, chaves_principal.map(tabela[coluna]), encontrado, modo_coluna_existente, sufixo
+        )
+        if aviso:
+            avisos.append(aviso)
+
+    sem_correspondencia = int((~encontrado).sum())
+    if sem_correspondencia > 0:
+        avisos.append(f"{sem_correspondencia} linha(s) sem correspondência na tabela de consulta.")
 
     return ResultadoBusca(df=resultado, avisos=avisos)
 
@@ -659,6 +766,14 @@ def executar_proch(df: pd.DataFrame, linha_chave: int, valor_procurado: Any, lin
     return ResultadoBusca(df=resultado, avisos=avisos)
 
 
+def _chave_numerica(serie: pd.Series) -> pd.Series:
+    """Converte uma coluna de busca em números comparáveis (datas viram segundos)."""
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        datas = pd.to_datetime(serie, errors="coerce")
+        return (datas - pd.Timestamp(0, tz=datas.dt.tz)).dt.total_seconds()
+    return pd.to_numeric(serie, errors="coerce").astype(float)
+
+
 def executar_procx(
     df_principal: pd.DataFrame,
     df_consulta: pd.DataFrame,
@@ -668,6 +783,7 @@ def executar_procx(
     modo_correspondencia: str = "exata",
     ocorrencia: str = "primeira",
     valor_nao_encontrado: Any = None,
+    modo_coluna_existente: str = "nova",
 ) -> ResultadoBusca:
     """Reproduz o comportamento do PROCX (XLOOKUP), com correspondência exata ou aproximada.
 
@@ -684,41 +800,68 @@ def executar_procx(
 
     if modo_correspondencia == "exata":
         manter = "first" if ocorrencia == "primeira" else "last"
-        tabela = df_consulta.drop_duplicates(subset=[coluna_busca_consulta], keep=manter)
-        duplicadas = df_consulta[coluna_busca_consulta].duplicated().sum()
+        # Mesma comparação do PROCV: 1, 1.0 e "1" batem, texto sem diferenciar
+        # maiúsculas/espaços nas pontas, e vazio nunca encontra correspondência.
+        chaves_consulta = df_consulta[coluna_busca_consulta].map(normalizar_chave_busca)
+        duplicadas = int(chaves_consulta.dropna().duplicated().sum())
         if duplicadas > 0:
             avisos.append(
                 f"Existem {duplicadas} chave(s) duplicada(s); mantida a ocorrência '{ocorrencia}' de cada uma."
             )
-        mapa = tabela.set_index(coluna_busca_consulta)
+        mapa = df_consulta[colunas_retorno].copy()
+        mapa["_chave_"] = chaves_consulta
+        mapa = mapa[mapa["_chave_"].notna()].drop_duplicates(subset=["_chave_"], keep=manter).set_index("_chave_")
+        chaves_principal = df_principal[coluna_busca_principal].map(normalizar_chave_busca)
+        encontrado = chaves_principal.isin(mapa.index)
         resultado = df_principal.copy()
         for coluna in colunas_retorno:
-            valores_mapeados = df_principal[coluna_busca_principal].map(mapa[coluna])
-            if valor_nao_encontrado is not None:
-                valores_mapeados = valores_mapeados.fillna(valor_nao_encontrado)
-            nome_novo = coluna if coluna not in resultado.columns else f"{coluna}_procx"
-            resultado[nome_novo] = valores_mapeados
-        nao_encontrados = df_principal[~df_principal[coluna_busca_principal].isin(mapa.index)].shape[0]
+            aviso = _gravar_coluna_retorno(
+                resultado, coluna, chaves_principal.map(mapa[coluna]), encontrado, modo_coluna_existente, "_procx", valor_nao_encontrado
+            )
+            if aviso:
+                avisos.append(aviso)
+        nao_encontrados = int((~encontrado).sum())
         if nao_encontrados > 0:
             avisos.append(f"{nao_encontrados} linha(s) sem correspondência exata.")
         return ResultadoBusca(df=resultado, avisos=avisos)
 
     if modo_correspondencia == "aproximada":
-        try:
-            esquerda = df_principal.copy()
-            direita = df_consulta[[coluna_busca_consulta] + colunas_retorno].copy()
-            esquerda["_chave_ordenacao_"] = pd.to_numeric(esquerda[coluna_busca_principal], errors="coerce")
-            direita["_chave_ordenacao_"] = pd.to_numeric(direita[coluna_busca_consulta], errors="coerce")
-            esquerda = esquerda.sort_values("_chave_ordenacao_")
-            direita = direita.sort_values("_chave_ordenacao_")
-            resultado = pd.merge_asof(esquerda, direita, on="_chave_ordenacao_", direction="nearest")
-            resultado = resultado.drop(columns=["_chave_ordenacao_"])
-            return ResultadoBusca(df=resultado, avisos=avisos)
-        except Exception as exc:  # noqa: BLE001
+        # Mesma semântica do PROCV/PROCX aproximado do Excel: devolve a linha
+        # com o maior valor menor ou igual ao procurado, mantendo a ordem
+        # original das linhas do dataset principal.
+        chaves_principal = _chave_numerica(df_principal[coluna_busca_principal])
+        chaves_consulta = _chave_numerica(df_consulta[coluna_busca_consulta])
+        if chaves_consulta.notna().sum() == 0:
             raise ErroOperacao(
-                f"Não foi possível realizar a correspondência aproximada: {exc}. "
-                "Verifique se as colunas de busca são numéricas ou datas."
-            ) from exc
+                "A correspondência aproximada exige uma coluna de busca numérica ou de datas no dataset de consulta."
+            )
+        invalidas = int(chaves_consulta.isna().sum())
+        if invalidas > 0:
+            avisos.append(f"{invalidas} linha(s) da consulta ignorada(s) por não terem chave numérica/data.")
+        tabela = df_consulta.loc[chaves_consulta.notna(), colunas_retorno].copy()
+        tabela["_chave_"] = chaves_consulta[chaves_consulta.notna()]
+        manter = "first" if ocorrencia == "primeira" else "last"
+        tabela = tabela.drop_duplicates(subset=["_chave_"], keep=manter).sort_values("_chave_", kind="stable")
+
+        posicoes = np.searchsorted(tabela["_chave_"].to_numpy(), chaves_principal.to_numpy(), side="right") - 1
+        encontrado = (posicoes >= 0) & chaves_principal.notna().to_numpy()
+        posicoes = np.where(encontrado, posicoes, 0)
+
+        resultado = df_principal.copy()
+        encontrado_serie = pd.Series(encontrado, index=df_principal.index)
+        for coluna in colunas_retorno:
+            valores = pd.Series(tabela[coluna].to_numpy()[posicoes], index=df_principal.index)
+            aviso = _gravar_coluna_retorno(
+                resultado, coluna, valores, encontrado_serie, modo_coluna_existente, "_procx", valor_nao_encontrado
+            )
+            if aviso:
+                avisos.append(aviso)
+        nao_encontrados = int((~encontrado).sum())
+        if nao_encontrados > 0:
+            avisos.append(
+                f"{nao_encontrados} linha(s) sem correspondência (valor vazio, não numérico ou menor que a menor chave)."
+            )
+        return ResultadoBusca(df=resultado, avisos=avisos)
 
     raise ErroOperacao(f"Modo de correspondência desconhecido: '{modo_correspondencia}'.")
 
@@ -751,10 +894,10 @@ def construir_mascara_criterio(serie: pd.Series, criterio: str) -> pd.Series:
     if operador in (">", "<", ">=", "<="):
         serie_numerica = pd.to_numeric(serie, errors="coerce")
         try:
-            valor_numerico = float(valor)
+            valor_numerico = converter_numero_br(valor)
         except ValueError:
-            valor_numerico = pd.to_datetime(valor, errors="coerce")
-            serie_numerica = pd.to_datetime(serie, errors="coerce")
+            valor_numerico = converter_datas_br(valor)
+            serie_numerica = converter_datas_br(serie)
         if operador == ">":
             return serie_numerica > valor_numerico
         if operador == "<":
@@ -764,7 +907,7 @@ def construir_mascara_criterio(serie: pd.Series, criterio: str) -> pd.Series:
         return serie_numerica <= valor_numerico
 
     try:
-        valor_numerico = float(valor)
+        valor_numerico = converter_numero_br(valor)
         serie_comparacao = pd.to_numeric(serie, errors="coerce")
         if operador == "<>":
             return serie_comparacao != valor_numerico
@@ -846,7 +989,7 @@ def funcao_se(
 ) -> pd.DataFrame:
     """Equivalente a SE: cria uma coluna com base em uma condição booleana já calculada."""
     resultado = df.copy()
-    resultado[nova_coluna] = np.where(condicao, valor_verdadeiro, valor_falso)
+    resultado[nova_coluna] = _valores_por_condicao(df.index, [condicao], [valor_verdadeiro], valor_falso)
     return resultado
 
 
@@ -857,7 +1000,7 @@ def funcao_se_aninhado(
     if len(condicoes) != len(valores):
         raise ErroOperacao("A quantidade de condições e de valores deve ser igual.")
     resultado = df.copy()
-    resultado[nova_coluna] = np.select(condicoes, valores, default=valor_padrao)
+    resultado[nova_coluna] = _valores_por_condicao(df.index, condicoes, valores, valor_padrao)
     return resultado
 
 
