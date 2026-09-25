@@ -173,7 +173,8 @@ aba por resultado nomeado (tabelas dinâmicas, PROCH, SOMASE etc.).
   comuns (`utf-8-sig`, `utf-8`, `cp1252`, `latin-1`); arquivos em
   codificações incomuns podem exigir informar a codificação manualmente.
 - O avaliador seguro de expressões aceita apenas operadores aritméticos,
-  comparações, `E`/`OU` (via `and`/`or` do Python) e um conjunto fixo de
+  comparações, `E`/`OU`/`NÃO` (via `and`/`or`/`not`, ou `&`/`|`/`~` com cada
+  condição entre parênteses) e um conjunto fixo de
   funções (`abs`, `round`, `min`, `max`, `sqrt`, `log`, `log10`, `exp`) —
   expressões mais complexas do Excel não têm equivalente direto.
 - A aplicação é de linha de comando (sem interface gráfica) e de sessão

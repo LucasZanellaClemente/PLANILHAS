@@ -659,6 +659,14 @@ def executar_proch(df: pd.DataFrame, linha_chave: int, valor_procurado: Any, lin
     return ResultadoBusca(df=resultado, avisos=avisos)
 
 
+def _chave_numerica(serie: pd.Series) -> pd.Series:
+    """Converte uma coluna de busca em números comparáveis (datas viram segundos)."""
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        datas = pd.to_datetime(serie, errors="coerce")
+        return (datas - pd.Timestamp(0, tz=datas.dt.tz)).dt.total_seconds()
+    return pd.to_numeric(serie, errors="coerce").astype(float)
+
+
 def executar_procx(
     df_principal: pd.DataFrame,
     df_consulta: pd.DataFrame,
@@ -704,21 +712,41 @@ def executar_procx(
         return ResultadoBusca(df=resultado, avisos=avisos)
 
     if modo_correspondencia == "aproximada":
-        try:
-            esquerda = df_principal.copy()
-            direita = df_consulta[[coluna_busca_consulta] + colunas_retorno].copy()
-            esquerda["_chave_ordenacao_"] = pd.to_numeric(esquerda[coluna_busca_principal], errors="coerce")
-            direita["_chave_ordenacao_"] = pd.to_numeric(direita[coluna_busca_consulta], errors="coerce")
-            esquerda = esquerda.sort_values("_chave_ordenacao_")
-            direita = direita.sort_values("_chave_ordenacao_")
-            resultado = pd.merge_asof(esquerda, direita, on="_chave_ordenacao_", direction="nearest")
-            resultado = resultado.drop(columns=["_chave_ordenacao_"])
-            return ResultadoBusca(df=resultado, avisos=avisos)
-        except Exception as exc:  # noqa: BLE001
+        # Mesma semântica do PROCV/PROCX aproximado do Excel: devolve a linha
+        # com o maior valor menor ou igual ao procurado, mantendo a ordem
+        # original das linhas do dataset principal.
+        chaves_principal = _chave_numerica(df_principal[coluna_busca_principal])
+        chaves_consulta = _chave_numerica(df_consulta[coluna_busca_consulta])
+        if chaves_consulta.notna().sum() == 0:
             raise ErroOperacao(
-                f"Não foi possível realizar a correspondência aproximada: {exc}. "
-                "Verifique se as colunas de busca são numéricas ou datas."
-            ) from exc
+                "A correspondência aproximada exige uma coluna de busca numérica ou de datas no dataset de consulta."
+            )
+        invalidas = int(chaves_consulta.isna().sum())
+        if invalidas > 0:
+            avisos.append(f"{invalidas} linha(s) da consulta ignorada(s) por não terem chave numérica/data.")
+        tabela = df_consulta.loc[chaves_consulta.notna(), colunas_retorno].copy()
+        tabela["_chave_"] = chaves_consulta[chaves_consulta.notna()]
+        manter = "first" if ocorrencia == "primeira" else "last"
+        tabela = tabela.drop_duplicates(subset=["_chave_"], keep=manter).sort_values("_chave_", kind="stable")
+
+        posicoes = np.searchsorted(tabela["_chave_"].to_numpy(), chaves_principal.to_numpy(), side="right") - 1
+        encontrado = (posicoes >= 0) & chaves_principal.notna().to_numpy()
+        posicoes = np.where(encontrado, posicoes, 0)
+
+        resultado = df_principal.copy()
+        for coluna in colunas_retorno:
+            valores = pd.Series(tabela[coluna].to_numpy()[posicoes], index=df_principal.index)
+            valores = valores.where(encontrado)
+            if valor_nao_encontrado is not None:
+                valores = valores.fillna(valor_nao_encontrado)
+            nome_novo = coluna if coluna not in resultado.columns else f"{coluna}_procx"
+            resultado[nome_novo] = valores
+        nao_encontrados = int((~encontrado).sum())
+        if nao_encontrados > 0:
+            avisos.append(
+                f"{nao_encontrados} linha(s) sem correspondência (valor vazio, não numérico ou menor que a menor chave)."
+            )
+        return ResultadoBusca(df=resultado, avisos=avisos)
 
     raise ErroOperacao(f"Modo de correspondência desconhecido: '{modo_correspondencia}'.")
 

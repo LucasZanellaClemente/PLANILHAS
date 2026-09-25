@@ -102,8 +102,11 @@ _NOS_PERMITIDOS = (
     ast.USub,
     ast.UAdd,
     ast.Not,
+    ast.Invert,
     ast.And,
     ast.Or,
+    ast.BitAnd,
+    ast.BitOr,
     ast.Eq,
     ast.NotEq,
     ast.Lt,
@@ -134,6 +137,88 @@ def _validar_arvore(arvore: ast.AST, colunas_validas: set[str]) -> None:
         if isinstance(no, ast.Call):
             if not isinstance(no.func, ast.Name) or no.func.id not in FUNCOES_PERMITIDAS:
                 raise ErroExpressaoInsegura("Apenas as funções abs, round, min, max, sqrt, log, log10 e exp são permitidas.")
+        if isinstance(no, ast.Compare):
+            for operando in [no.left, *no.comparators]:
+                if isinstance(operando, ast.BinOp) and isinstance(operando.op, (ast.BitAnd, ast.BitOr)):
+                    raise ErroExpressaoInsegura(
+                        "Ao usar & ou |, coloque cada condição entre parênteses, ex.: "
+                        "(Quantidade > 2) & (Valor_Total > 500). Ou use and/or: Quantidade > 2 and Valor_Total > 500."
+                    )
+
+
+def _como_booleano(valor: Any) -> Any:
+    """Converte um operando lógico em booleano elemento a elemento (vazio conta como falso)."""
+    if isinstance(valor, pd.Series):
+        return valor.notna() & valor.astype(bool)
+    return bool(valor) if not pd.isna(valor) else False
+
+
+def _e_logico(*valores: Any) -> Any:
+    resultado = _como_booleano(valores[0])
+    for valor in valores[1:]:
+        resultado = resultado & _como_booleano(valor)
+    return resultado
+
+
+def _ou_logico(*valores: Any) -> Any:
+    resultado = _como_booleano(valores[0])
+    for valor in valores[1:]:
+        resultado = resultado | _como_booleano(valor)
+    return resultado
+
+
+def _nao_logico(valor: Any) -> Any:
+    booleano = _como_booleano(valor)
+    return ~booleano if isinstance(booleano, pd.Series) else not booleano
+
+
+_FUNCOES_LOGICAS: dict[str, Callable[..., Any]] = {
+    "__e__": _e_logico,
+    "__ou__": _ou_logico,
+    "__nao__": _nao_logico,
+}
+
+
+class _TradutorLogico(ast.NodeTransformer):
+    """Troca and/or/not (e &, |, ~) por funções que operam coluna a coluna.
+
+    O ``and``/``or`` do Python tenta converter a coluna inteira em um único
+    verdadeiro/falso, o que gera "The truth value of a Series is ambiguous".
+    Também desdobra comparações encadeadas (``1 < x < 5``) pelo mesmo motivo.
+    """
+
+    @staticmethod
+    def _chamar(nome: str, argumentos: list[ast.expr]) -> ast.Call:
+        return ast.Call(func=ast.Name(id=nome, ctx=ast.Load()), args=argumentos, keywords=[])
+
+    def visit_BoolOp(self, no: ast.BoolOp) -> ast.AST:
+        self.generic_visit(no)
+        return self._chamar("__e__" if isinstance(no.op, ast.And) else "__ou__", no.values)
+
+    def visit_BinOp(self, no: ast.BinOp) -> ast.AST:
+        self.generic_visit(no)
+        if isinstance(no.op, ast.BitAnd):
+            return self._chamar("__e__", [no.left, no.right])
+        if isinstance(no.op, ast.BitOr):
+            return self._chamar("__ou__", [no.left, no.right])
+        return no
+
+    def visit_UnaryOp(self, no: ast.UnaryOp) -> ast.AST:
+        self.generic_visit(no)
+        if isinstance(no.op, (ast.Not, ast.Invert)):
+            return self._chamar("__nao__", [no.operand])
+        return no
+
+    def visit_Compare(self, no: ast.Compare) -> ast.AST:
+        self.generic_visit(no)
+        if len(no.ops) == 1:
+            return no
+        operandos = [no.left, *no.comparators]
+        partes = [
+            ast.Compare(left=operandos[i], ops=[op], comparators=[operandos[i + 1]])
+            for i, op in enumerate(no.ops)
+        ]
+        return self._chamar("__e__", partes)
 
 
 def avaliar_expressao_segura(expressao: str, df: pd.DataFrame) -> pd.Series:
@@ -152,10 +237,15 @@ def avaliar_expressao_segura(expressao: str, df: pd.DataFrame) -> pd.Series:
     except SyntaxError as exc:
         raise ErroExpressaoInsegura(f"Expressão inválida: {exc}") from exc
     _validar_arvore(arvore, colunas_validas)
+    arvore = ast.fix_missing_locations(_TradutorLogico().visit(arvore))
     codigo = compile(arvore, "<expressao_usuario>", mode="eval")
     contexto: dict[str, Any] = {str(coluna): df[coluna] for coluna in df.columns}
     contexto.update(FUNCOES_PERMITIDAS)
-    resultado = eval(codigo, {"__builtins__": {}}, contexto)  # nós já validamos a árvore acima
+    contexto.update(_FUNCOES_LOGICAS)
+    try:
+        resultado = eval(codigo, {"__builtins__": {}}, contexto)  # nós já validamos a árvore acima
+    except Exception as exc:  # noqa: BLE001
+        raise ErroExpressaoInsegura(f"Não foi possível avaliar a expressão: {exc}") from exc
     if not isinstance(resultado, pd.Series):
         resultado = pd.Series([resultado] * len(df), index=df.index)
     return resultado
@@ -164,7 +254,7 @@ def avaliar_expressao_segura(expressao: str, df: pd.DataFrame) -> pd.Series:
 def avaliar_condicao_segura(expressao: str, df: pd.DataFrame) -> pd.Series:
     """Igual a :func:`avaliar_expressao_segura`, mas garante retorno booleano."""
     resultado = avaliar_expressao_segura(expressao, df)
-    return resultado.astype(bool)
+    return _como_booleano(resultado)
 
 
 def formatar_percentual(valor: float) -> str:
