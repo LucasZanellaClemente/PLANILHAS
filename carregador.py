@@ -16,7 +16,7 @@ from typing import Optional
 
 import pandas as pd
 
-from utils import ErroOperacao, eh_coluna_texto, serie_numeros_br
+from utils import ErroOperacao, converter_coluna_texto_csv
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,9 @@ def carregar_csv(
             sep=delimitador_usado,
             encoding=codificacao_usada,
             engine="python",
+            # Tudo como texto: a conversão abaixo decide o tipo sem perder zeros à
+            # esquerda nem ler "1.500" (mil e quinhentos) como 1,5.
+            dtype=str,
         )
     except Exception as exc:  # noqa: BLE001
         raise ErroOperacao(
@@ -131,10 +134,11 @@ def carregar_csv(
             caminho.name,
             delimitador_usado,
         )
-    # Colunas com números no formato brasileiro (1.234,56 / 10,50) chegam como texto.
+    # No CSV separado por vírgula não pode haver vírgula decimal sem aspas; nos demais
+    # (";", tab, "|") o formato brasileiro é aceito.
+    aceita_formato_br = delimitador_usado != ","
     for coluna in df.columns:
-        if eh_coluna_texto(df[coluna]):
-            convertida = serie_numeros_br(df[coluna])
-            if convertida is not None:
-                df[coluna] = convertida
+        convertida = converter_coluna_texto_csv(df[coluna], aceita_formato_br)
+        if convertida is not None:
+            df[coluna] = convertida
     return df, delimitador_usado, codificacao_usada

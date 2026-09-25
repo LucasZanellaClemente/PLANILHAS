@@ -48,6 +48,21 @@ Em Linux/macOS, ative o ambiente virtual com `source .venv/bin/activate`.
 python main.py
 ```
 
+## Testes automáticos
+
+Os testes conferem as funções contra a aba **Gabarito** de
+`Dataset_Financas_Complementar.xlsx` e contra casos que já deram valor errado
+(datas, números no formato brasileiro, PROCV, tabela dinâmica, arredondamento):
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+Nos campos de valor (SE, SE aninhado, valor fixo, "não encontrado" do PROCX,
+preencher nulos com valor), números como `100` ou `0,05` são gravados como
+número. Para gravar um número como texto, digite-o entre aspas: `"100"`.
+
 ## Exemplo de uso
 
 ```

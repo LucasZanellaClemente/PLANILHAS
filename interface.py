@@ -22,7 +22,15 @@ import catalogo
 import exportador
 import operacoes
 from estado import Dataset, HistoricoEntry, Sessao
-from utils import ErroExpressaoInsegura, ErroOperacao, avaliar_condicao_segura, avaliar_expressao_segura, truncar_texto
+from utils import (
+    ErroExpressaoInsegura,
+    ErroOperacao,
+    avaliar_condicao_segura,
+    avaliar_expressao_segura,
+    converter_numero_br,
+    interpretar_valor_digitado,
+    truncar_texto,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +86,20 @@ def ler_inteiro(mensagem: str, minimo: Optional[int] = None, maximo: Optional[in
 
 
 def ler_float(mensagem: str, padrao: Optional[float] = None) -> float:
-    """Lê um número decimal do usuário, aceitando vírgula ou ponto."""
+    """Lê um número decimal do usuário no formato brasileiro (1.234,56) ou com ponto decimal (10.5)."""
     while True:
-        bruto = input(mensagem).strip().replace(",", ".")
+        bruto = input(mensagem).strip()
         if not bruto and padrao is not None:
             return padrao
         try:
-            return float(bruto)
+            return converter_numero_br(bruto)
         except ValueError:
             print("Digite um número válido.")
+
+
+def ler_valor(mensagem: str, obrigatorio: bool = True, padrao: Optional[str] = None) -> Any:
+    """Lê um valor que pode ser número ou texto: ``100`` e ``0,05`` viram números; use aspas para forçar texto."""
+    return interpretar_valor_digitado(ler_texto(mensagem, obrigatorio=obrigatorio, padrao=padrao))
 
 
 def confirmar(mensagem: str, padrao: bool = False) -> bool:
@@ -628,8 +641,8 @@ def handler_coluna_calculada(sessao: Sessao) -> None:
         elif escolha == "3":
             condicao_texto = ler_texto("Expressão da condição (ex.: preco > 100): ")
             condicao = avaliar_condicao_segura(condicao_texto, df)
-            valor_v = ler_texto("Valor se verdadeiro: ")
-            valor_f = ler_texto("Valor se falso: ")
+            valor_v = ler_valor("Valor se verdadeiro: ")
+            valor_f = ler_valor("Valor se falso: ")
             resultado = operacoes.criar_coluna_condicional(df, nova_coluna, condicao, valor_v, valor_f)
             parametros = f"condicao={condicao_texto}, verdadeiro={valor_v}, falso={valor_f}"
         elif escolha == "4":
@@ -659,7 +672,7 @@ def handler_coluna_calculada(sessao: Sessao) -> None:
             resultado = operacoes.criar_coluna_diferenca_datas(df, nova_coluna, inicio, fim, unidade)
             parametros = f"inicio={inicio}, fim={fim}, unidade={unidade}"
         elif escolha == "7":
-            valor = ler_texto("Valor fixo: ")
+            valor = ler_valor("Valor fixo: ")
             resultado = operacoes.criar_coluna_valor_fixo(df, nova_coluna, valor)
             parametros = f"valor={valor}"
         else:
@@ -1023,7 +1036,7 @@ def handler_procx(sessao: Sessao) -> None:
     if modo == "exata":
         ocorrencia = ler_texto("Em caso de múltiplas ocorrências, usar (primeira/ultima): ", padrao="primeira")
     if confirmar("Deseja definir um valor para quando não houver correspondência?", padrao=False):
-        valor_nao_encontrado = ler_texto("Valor para 'não encontrado': ")
+        valor_nao_encontrado = ler_valor("Valor para 'não encontrado': ")
     try:
         resultado = operacoes.executar_procx(
             principal.df, consulta.df, coluna_busca_principal, coluna_busca_consulta, colunas_retorno, modo, ocorrencia, valor_nao_encontrado
@@ -1192,8 +1205,8 @@ def handler_se(sessao: Sessao) -> None:
     except ErroExpressaoInsegura as exc:
         print(f"Erro: {exc}")
         return
-    valor_v = ler_texto("Valor se verdadeiro: ")
-    valor_f = ler_texto("Valor se falso: ")
+    valor_v = ler_valor("Valor se verdadeiro: ")
+    valor_f = ler_valor("Valor se falso: ")
     nova_coluna = ler_texto("Nome da nova coluna: ")
     resultado = operacoes.funcao_se(df, nova_coluna, condicao, valor_v, valor_f)
     aplicar_com_confirmacao(sessao, dataset, resultado, "SE", f"condicao={condicao_texto}, verdadeiro={valor_v}, falso={valor_f}")
@@ -1218,14 +1231,14 @@ def handler_se_aninhado(sessao: Sessao) -> None:
         except ErroExpressaoInsegura as exc:
             print(f"Erro: {exc}")
             continue
-        valor = ler_texto(f"Valor se '{condicao_texto}' for verdadeira: ")
+        valor = ler_valor(f"Valor se '{condicao_texto}' for verdadeira: ")
         condicoes_texto.append(condicao_texto)
         condicoes.append(condicao)
         valores.append(valor)
     if not condicoes:
         print("Nenhuma condição informada.")
         return
-    valor_padrao = ler_texto("Valor padrão (se nenhuma condição for verdadeira): ")
+    valor_padrao = ler_valor("Valor padrão (se nenhuma condição for verdadeira): ")
     nova_coluna = ler_texto("Nome da nova coluna: ")
     try:
         resultado = operacoes.funcao_se_aninhado(df, nova_coluna, condicoes, valores, valor_padrao)
@@ -1256,7 +1269,11 @@ def handler_nulos(sessao: Sessao) -> None:
                 print("Selecione ao menos uma coluna.")
                 return
             metodo = ler_texto("Método (valor/media/mediana/moda/zero/texto): ")
-            valor = ler_texto("Valor a utilizar: ") if metodo in ("valor", "texto") else None
+            valor = None
+            if metodo == "valor":
+                valor = ler_valor("Valor a utilizar: ")
+            elif metodo == "texto":
+                valor = ler_texto("Valor a utilizar: ")
             resultado = operacoes.preencher_nulos(df, colunas, metodo, valor)
             parametros, nome_op = f"colunas={colunas}, metodo={metodo}, valor={valor}", "Preencher valores nulos"
         else:

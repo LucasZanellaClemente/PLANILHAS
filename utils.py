@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import ast
 import re
+from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Callable
 
 import numpy as np
@@ -50,7 +52,7 @@ def sanitizar_dataframe_formulas(df: pd.DataFrame) -> pd.DataFrame:
     return df_seguro
 
 
-_PADRAO_NUMERO_MILHAR_BR = re.compile(r"^[+-]?\d{1,3}(\.\d{3})+(,\d+)?$")
+_PADRAO_NUMERO_MILHAR_BR = re.compile(r"^[+-]?[1-9]\d{0,2}(\.\d{3})+(,\d+)?$")
 _PADRAO_NUMERO_DECIMAL_BR = re.compile(r"^[+-]?\d*,\d+$")
 
 
@@ -70,22 +72,42 @@ def converter_numero_br(valor: Any) -> float:
     return float(texto)
 
 
-def serie_numeros_br(serie: pd.Series) -> pd.Series | None:
-    """Converte uma coluna de texto com números no formato brasileiro para numérica.
+_PADRAO_INTEIRO = re.compile(r"^[+-]?\d+$")
+_PADRAO_NUMERO_INTERNACIONAL = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
+_TEXTOS_BOOLEANOS = {"true": True, "false": False}
 
-    Só converte quando todos os valores preenchidos são números em formato
-    brasileiro (``1.234,56``, ``10,50``); caso contrário retorna ``None``.
+
+def converter_coluna_texto_csv(serie: pd.Series, aceita_formato_br: bool) -> pd.Series | None:
+    """Converte uma coluna lida como texto de um CSV para número ou booleano, quando for o caso.
+
+    Retorna ``None`` quando a coluna deve continuar como texto. Regras:
+
+    * códigos com zero à esquerda (``00123``) e inteiros com mais de 15
+      dígitos (cartão, chave de NF-e) continuam texto, para não perder dígitos;
+    * com ``aceita_formato_br`` (CSV separado por ``;``, tab ou ``|``), ou
+      quando algum valor tem vírgula decimal, uma coluna em que todos os
+      valores estão no formato brasileiro é lida como tal: ``1.500`` vale mil
+      e quinhentos e ``10,50`` vale dez e meio;
+    * nos demais casos o ponto é o separador decimal (``1.5``).
     """
     textos = serie.dropna().astype(str).str.strip()
     textos = textos[textos != ""]
     if textos.empty:
         return None
-    eh_br = textos.str.match(_PADRAO_NUMERO_MILHAR_BR) | textos.str.match(_PADRAO_NUMERO_DECIMAL_BR)
-    eh_inteiro = textos.str.match(r"^[+-]?\d+$")
-    if not (eh_br | eh_inteiro).all() or not eh_br.any():
-        return None
-    convertida = serie.map(lambda v: converter_numero_br(v) if pd.notna(v) and str(v).strip() else np.nan)
-    return convertida.astype(float)
+    if textos.str.lower().isin(_TEXTOS_BOOLEANOS).all():
+        return serie.map(lambda v: _TEXTOS_BOOLEANOS.get(str(v).strip().lower()) if pd.notna(v) else v)
+    inteiros = textos.str.match(_PADRAO_INTEIRO)
+    if inteiros.all():
+        digitos = textos.str.lstrip("+-")
+        if (digitos.str.len() > 15).any() or ((digitos.str.len() > 1) & digitos.str.startswith("0")).any():
+            return None
+        return pd.to_numeric(serie.where(serie.astype(str).str.strip() != ""), errors="coerce")
+    eh_br = textos.str.match(_PADRAO_NUMERO_MILHAR_BR) | textos.str.match(_PADRAO_NUMERO_DECIMAL_BR) | inteiros
+    if eh_br.all() and (aceita_formato_br or textos.str.contains(",").any()):
+        return serie.map(lambda v: converter_numero_br(v) if pd.notna(v) and str(v).strip() else np.nan).astype(float)
+    if textos.str.match(_PADRAO_NUMERO_INTERNACIONAL).all():
+        return pd.to_numeric(serie.where(serie.astype(str).str.strip() != ""), errors="coerce").astype(float)
+    return None
 
 
 _PADRAO_DATA_ANO_PRIMEIRO = r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T].*)?$"
@@ -175,9 +197,68 @@ _NOS_PERMITIDOS = (
     ast.GtE,
 )
 
+def _arredondar_valor_excel(valor: Any, casas: int) -> Any:
+    if valor is None or pd.isna(valor) or np.isinf(valor):
+        return valor
+    # 15 algarismos significativos, como o Excel guarda: 2.675 continua 2.675 e não 2.67499999...
+    decimal = Decimal(repr(float(f"{float(valor):.15g}")))
+    return float(decimal.quantize(Decimal(1).scaleb(-casas), rounding=ROUND_HALF_UP))
+
+
+def arredondar_excel(valores: Any, casas: Any = 0) -> Any:
+    """Arredonda como o ARRED do Excel: metade sempre para longe do zero (2,5 → 3; −2,5 → −3; 0,125 → 0,13)."""
+    casas = int(casas)
+    if isinstance(valores, pd.Series):
+        return valores.astype(float).map(lambda v: _arredondar_valor_excel(v, casas))
+    return _arredondar_valor_excel(valores, casas)
+
+
+def interpretar_valor_digitado(texto: str) -> Any:
+    """Converte o valor digitado pelo usuário em número quando ele for um número.
+
+    ``100`` vira o inteiro 100, ``0,05`` e ``1.234,56`` viram decimais e o
+    resto continua texto. Aspas forçam texto: ``"100"`` fica ``'100'``.
+    """
+    texto = str(texto).strip()
+    if len(texto) >= 2 and texto[0] == texto[-1] and texto[0] in "\"'":
+        return texto[1:-1]
+    try:
+        numero = converter_numero_br(texto)
+    except ValueError:
+        return texto
+    if np.isnan(numero) or np.isinf(numero):
+        return texto
+    return int(numero) if _PADRAO_INTEIRO.match(texto.replace(".", "")) and numero.is_integer() else numero
+
+
+def normalizar_chave_busca(valor: Any) -> Any:
+    """Chave usada para comparar valores no PROCV/PROCX.
+
+    Números iguais batem independentemente do tipo (``1``, ``1.0`` e ``"1"``);
+    textos são comparados sem diferenciar maiúsculas e sem os espaços das
+    pontas, como o PROCV do Excel. Vazio retorna ``None`` e nunca encontra nada.
+    """
+    if valor is None or (not isinstance(valor, str) and pd.isna(valor)):
+        return None
+    if isinstance(valor, (bool, np.bool_)):
+        return ("b", bool(valor))
+    if isinstance(valor, (int, float, np.integer, np.floating)):
+        return ("n", float(valor))
+    if isinstance(valor, (pd.Timestamp, datetime)):
+        return ("d", pd.Timestamp(valor))
+    texto = str(valor).strip()
+    if texto == "":
+        return None
+    sem_sinal = texto.lstrip("+-")
+    codigo_com_zero = len(sem_sinal) > 1 and sem_sinal.startswith("0") and not sem_sinal.startswith("0.")
+    if _PADRAO_NUMERO_INTERNACIONAL.match(texto) and not codigo_com_zero:
+        return ("n", float(texto))
+    return ("t", texto.casefold())
+
+
 FUNCOES_PERMITIDAS: dict[str, Callable[..., Any]] = {
     "abs": np.abs,
-    "round": np.round,
+    "round": arredondar_excel,
     "min": np.minimum,
     "max": np.maximum,
     "sqrt": np.sqrt,

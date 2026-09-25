@@ -19,7 +19,14 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
-from utils import ErroOperacao, converter_datas_br, converter_numero_br, curinga_para_regex
+from utils import (
+    ErroOperacao,
+    arredondar_excel,
+    converter_datas_br,
+    converter_numero_br,
+    curinga_para_regex,
+    normalizar_chave_busca,
+)
 
 # ---------------------------------------------------------------------------
 # Utilidades de validação
@@ -286,12 +293,25 @@ def criar_coluna_percentual(
     return resultado
 
 
+def _valores_por_condicao(indice: pd.Index, condicoes: list[pd.Series], valores: list[Any], valor_padrao: Any) -> pd.Series:
+    """Aplica a primeira condição verdadeira de cada linha, mantendo o tipo de cada valor.
+
+    ``np.where``/``np.select`` transformariam tudo em texto ao misturar número e
+    texto (``100`` e ``"Baixo"`` viram ``"100"`` e ``"Baixo"``).
+    """
+    resultado = pd.Series([valor_padrao] * len(indice), index=indice, dtype=object)
+    for condicao, valor in reversed(list(zip(condicoes, valores))):
+        mascara = pd.Series(np.asarray(condicao, dtype=bool), index=indice)
+        resultado = resultado.mask(mascara, valor)
+    return resultado.infer_objects()
+
+
 def criar_coluna_condicional(
     df: pd.DataFrame, nova_coluna: str, condicao: pd.Series, valor_verdadeiro: Any, valor_falso: Any
 ) -> pd.DataFrame:
     """Cria uma coluna a partir de uma condição booleana já calculada (ver módulo ``utils``)."""
     resultado = df.copy()
-    resultado[nova_coluna] = np.where(condicao, valor_verdadeiro, valor_falso)
+    resultado[nova_coluna] = _valores_por_condicao(df.index, [condicao], [valor_verdadeiro], valor_falso)
     return resultado
 
 
@@ -380,7 +400,7 @@ def aplicar_operacao_matematica(
         resultado[nova_coluna] = np.log(serie)
     elif operacao == "arredondar":
         casas = int(parametro) if parametro is not None else 0
-        resultado[nova_coluna] = serie.round(casas)
+        resultado[nova_coluna] = arredondar_excel(serie, casas)
     elif operacao == "absoluto":
         resultado[nova_coluna] = serie.abs()
     else:
@@ -568,6 +588,9 @@ def criar_tabela_dinamica(
         fill_value=preencher_vazios,
         margins=totais_gerais,
         margins_name="Total Geral",
+        # Com dropna=True o pandas descarta, antes do Total Geral, toda linha que tenha
+        # algum vazio em qualquer coluna de valores, e some com grupos de chave vazia.
+        dropna=False,
     )
     if isinstance(tabela.columns, pd.MultiIndex):
         tabela.columns = [" | ".join(str(nivel) for nivel in tupla if str(nivel) != "") for tupla in tabela.columns]
@@ -601,7 +624,11 @@ def executar_procv(
 
     avisos: list[str] = []
 
-    duplicadas = df_consulta[chave_consulta].duplicated().sum()
+    # Chaves normalizadas: 1, 1.0 e "1" batem; texto sem diferenciar maiúsculas nem
+    # espaços nas pontas (como o PROCV do Excel); vazio nunca encontra correspondência.
+    coluna_auxiliar = "__chave_comparacao__"
+    chaves_consulta = df_consulta[chave_consulta].map(normalizar_chave_busca)
+    duplicadas = int(chaves_consulta.dropna().duplicated().sum())
     if duplicadas > 0:
         avisos.append(
             f"A tabela de consulta possui {duplicadas} chave(s) duplicada(s) em '{chave_consulta}'; "
@@ -612,50 +639,25 @@ def executar_procv(
     tipo_consulta = df_consulta[chave_consulta].dtype
     if tipo_principal != tipo_consulta:
         avisos.append(
-            f"Tipos de chave incompatíveis ('{chave_principal}': {tipo_principal} x "
-            f"'{chave_consulta}': {tipo_consulta}). As chaves serão comparadas como texto."
+            f"Tipos de chave diferentes ('{chave_principal}': {tipo_principal} x "
+            f"'{chave_consulta}': {tipo_consulta}). Números iguais e textos iguais foram considerados correspondentes."
         )
 
-    df_esquerda = df_principal.copy()
-    df_direita = df_consulta[[chave_consulta] + colunas_retorno].drop_duplicates(subset=[chave_consulta], keep="first").copy()
+    tabela = df_consulta[colunas_retorno].copy()
+    tabela[coluna_auxiliar] = chaves_consulta
+    tabela = tabela[tabela[coluna_auxiliar].notna()].drop_duplicates(subset=[coluna_auxiliar], keep="first")
+    tabela = tabela.set_index(coluna_auxiliar)
+    chaves_principal = df_principal[chave_principal].map(normalizar_chave_busca)
+    encontrado = chaves_principal.isin(tabela.index)
 
-    coluna_auxiliar_esq = None
-    coluna_auxiliar_dir = None
-    if tipo_principal != tipo_consulta:
-        coluna_auxiliar_esq = "__chave_comparacao__"
-        coluna_auxiliar_dir = "__chave_comparacao__"
-        df_esquerda[coluna_auxiliar_esq] = df_esquerda[chave_principal].astype(str)
-        df_direita[coluna_auxiliar_dir] = df_direita[chave_consulta].astype(str)
-        chave_merge_esquerda, chave_merge_direita = coluna_auxiliar_esq, coluna_auxiliar_dir
-    else:
-        chave_merge_esquerda, chave_merge_direita = chave_principal, chave_consulta
-
-    linhas_antes = len(df_esquerda)
-    resultado = df_esquerda.merge(
-        df_direita,
-        left_on=chave_merge_esquerda,
-        right_on=chave_merge_direita,
-        how="left",
-        suffixes=("", sufixo),
-    )
-
-    if coluna_auxiliar_esq:
-        resultado = resultado.drop(columns=[coluna_auxiliar_esq])
-    if chave_consulta != chave_principal and chave_consulta in resultado.columns and chave_consulta not in df_principal.columns:
-        resultado = resultado.drop(columns=[chave_consulta])
-
-    if len(resultado) != linhas_antes:
-        avisos.append(
-            f"A junção alterou a quantidade de linhas: {linhas_antes} antes, {len(resultado)} depois."
-        )
-
+    resultado = df_principal.copy()
     for coluna in colunas_retorno:
-        nome_final = coluna if coluna not in df_principal.columns else f"{coluna}{sufixo}"
-        nome_final = nome_final if nome_final in resultado.columns else coluna
-        if nome_final in resultado.columns:
-            sem_correspondencia = resultado[nome_final].isna().sum()
-            if sem_correspondencia > 0:
-                avisos.append(f"{sem_correspondencia} linha(s) sem correspondência para a coluna '{coluna}'.")
+        nome_final = coluna if coluna not in resultado.columns else f"{coluna}{sufixo}"
+        resultado[nome_final] = chaves_principal.map(tabela[coluna]).where(encontrado)
+
+    sem_correspondencia = int((~encontrado).sum())
+    if sem_correspondencia > 0:
+        avisos.append(f"{sem_correspondencia} linha(s) sem correspondência na tabela de consulta.")
 
     return ResultadoBusca(df=resultado, avisos=avisos)
 
@@ -729,21 +731,27 @@ def executar_procx(
 
     if modo_correspondencia == "exata":
         manter = "first" if ocorrencia == "primeira" else "last"
-        tabela = df_consulta.drop_duplicates(subset=[coluna_busca_consulta], keep=manter)
-        duplicadas = df_consulta[coluna_busca_consulta].duplicated().sum()
+        # Mesma comparação do PROCV: 1, 1.0 e "1" batem, texto sem diferenciar
+        # maiúsculas/espaços nas pontas, e vazio nunca encontra correspondência.
+        chaves_consulta = df_consulta[coluna_busca_consulta].map(normalizar_chave_busca)
+        duplicadas = int(chaves_consulta.dropna().duplicated().sum())
         if duplicadas > 0:
             avisos.append(
                 f"Existem {duplicadas} chave(s) duplicada(s); mantida a ocorrência '{ocorrencia}' de cada uma."
             )
-        mapa = tabela.set_index(coluna_busca_consulta)
+        mapa = df_consulta[colunas_retorno].copy()
+        mapa["_chave_"] = chaves_consulta
+        mapa = mapa[mapa["_chave_"].notna()].drop_duplicates(subset=["_chave_"], keep=manter).set_index("_chave_")
+        chaves_principal = df_principal[coluna_busca_principal].map(normalizar_chave_busca)
+        encontrado = chaves_principal.isin(mapa.index)
         resultado = df_principal.copy()
         for coluna in colunas_retorno:
-            valores_mapeados = df_principal[coluna_busca_principal].map(mapa[coluna])
+            valores_mapeados = chaves_principal.map(mapa[coluna]).where(encontrado)
             if valor_nao_encontrado is not None:
-                valores_mapeados = valores_mapeados.fillna(valor_nao_encontrado)
+                valores_mapeados = valores_mapeados.where(encontrado, valor_nao_encontrado)
             nome_novo = coluna if coluna not in resultado.columns else f"{coluna}_procx"
             resultado[nome_novo] = valores_mapeados
-        nao_encontrados = df_principal[~df_principal[coluna_busca_principal].isin(mapa.index)].shape[0]
+        nao_encontrados = int((~encontrado).sum())
         if nao_encontrados > 0:
             avisos.append(f"{nao_encontrados} linha(s) sem correspondência exata.")
         return ResultadoBusca(df=resultado, avisos=avisos)
@@ -775,7 +783,7 @@ def executar_procx(
             valores = pd.Series(tabela[coluna].to_numpy()[posicoes], index=df_principal.index)
             valores = valores.where(encontrado)
             if valor_nao_encontrado is not None:
-                valores = valores.fillna(valor_nao_encontrado)
+                valores = valores.where(encontrado, valor_nao_encontrado)
             nome_novo = coluna if coluna not in resultado.columns else f"{coluna}_procx"
             resultado[nome_novo] = valores
         nao_encontrados = int((~encontrado).sum())
@@ -911,7 +919,7 @@ def funcao_se(
 ) -> pd.DataFrame:
     """Equivalente a SE: cria uma coluna com base em uma condição booleana já calculada."""
     resultado = df.copy()
-    resultado[nova_coluna] = np.where(condicao, valor_verdadeiro, valor_falso)
+    resultado[nova_coluna] = _valores_por_condicao(df.index, [condicao], [valor_verdadeiro], valor_falso)
     return resultado
 
 
@@ -922,7 +930,7 @@ def funcao_se_aninhado(
     if len(condicoes) != len(valores):
         raise ErroOperacao("A quantidade de condições e de valores deve ser igual.")
     resultado = df.copy()
-    resultado[nova_coluna] = np.select(condicoes, valores, default=valor_padrao)
+    resultado[nova_coluna] = _valores_por_condicao(df.index, condicoes, valores, valor_padrao)
     return resultado
 
 
