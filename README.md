@@ -120,6 +120,13 @@ O relatório **completo** traz também `Catalogo_Colunas`, `Qualidade_Dados`,
 `Historico` e, para todos os datasets, a versão original (`<nome>_orig`) e a
 alterada (`<nome>_alt`).
 
+Nos dois tipos, a opção 30 pergunta também se deve salvar uma **cópia com o
+resultado final** (padrão: sim). Para cada planilha importada que foi alterada,
+ela grava `<nome_do_arquivo>_final.xlsx` na mesma pasta do relatório, com as
+mesmas abas e na mesma ordem do arquivo original, mas com os dados como
+ficaram depois das operações (colunas do PROCV, SE, filtros etc.). O arquivo
+original não é modificado.
+
 ## Arquitetura (resumo)
 
 - **`carregador.py`** identifica o formato do arquivo pela extensão, detecta

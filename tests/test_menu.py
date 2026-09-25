@@ -3,6 +3,7 @@
 import builtins
 import contextlib
 import copy
+from pathlib import Path
 import io
 import tempfile
 import warnings
@@ -195,6 +196,7 @@ def c30_completo(s, o):
     igual(pd.read_excel(arquivo, "atingimento_orig").Valor.tolist()[0], 1500)
     igual(pd.read_excel(arquivo, "Vendas_somase").Resultado[0], 9000)
     igual(sum(1 for ws in wb.worksheets for r in ws.iter_rows() for c in r if c.data_type == "f"), 0, "fórmulas")
+    assert "Cópia com o resultado final" not in o, "cópia gerada mesmo respondendo não"
 
 
 def c30_resumido(s, o):
@@ -212,10 +214,23 @@ def c30_resumido(s, o):
     igual(int(resumo["Operações executadas"]), 2)
     assert "SOMASE (1x)" in resumo["Opções usadas"]
     assert "Resumo do que foi feito" in o and "1. SOMASE" in o
+    # Cópia da planilha importada com o resultado final: mesmas abas, na mesma ordem.
+    arquivo_origem = s.listar_datasets()[0].arquivo
+    copia = TMP / f"{Path(arquivo_origem).stem}_final.xlsx"
+    assert copia.exists(), o
+    assert "Cópia com o resultado final salva em" in o
+    abas_origem = [str(d.aba) for d in s.listar_datasets() if d.origem == "importado" and d.arquivo == arquivo_origem]
+    igual(openpyxl.load_workbook(copia).sheetnames, abas_origem)
+    final = pd.read_excel(copia, "Vendas")
+    igual(len(final), len(V))
+    igual(final.Bonus.sum(), 100 * int((V.Valor_Total >= 1000).sum()))
+    assert pd.api.types.is_numeric_dtype(final.Bonus), "Bonus gravado como texto"
+    # O CSV importado não foi alterado, então não ganha cópia.
+    igual(sorted(p.name for p in TMP.glob("*_final.xlsx")), [copia.name])
 
 
-caso(30, "Salvar relatório resumido (padrão) e reler o .xlsx", ["", TMP / "relatorio.xlsx"], c30_resumido, sessao=s30())
-caso(30, "Salvar relatório completo e reler o .xlsx", ["2", TMP / "relatorio_completo.xlsx"], c30_completo, sessao=s30())
+caso(30, "Salvar relatório resumido (padrão) e reler o .xlsx", ["", "", TMP / "relatorio.xlsx"], c30_resumido, sessao=s30())
+caso(30, "Salvar relatório completo e reler o .xlsx", ["2", "n", TMP / "relatorio_completo.xlsx"], c30_completo, sessao=s30())
 
 
 @pytest.mark.parametrize("num, entradas, conferir, handler, sessao", CASOS)

@@ -307,6 +307,32 @@ def _gerar_relatorio_resumido(sessao: Sessao, caminho_saida: Path) -> Path:
     return caminho_saida
 
 
+def gerar_copias_finais(sessao: Sessao, pasta: Path, sufixo: str = "_final") -> list[Path]:
+    """Salva, para cada arquivo importado que foi alterado, uma cópia com o resultado final.
+
+    A cópia tem as mesmas abas do arquivo importado, na mesma ordem e com os
+    mesmos nomes, mas com os dados como ficaram depois das operações. O
+    arquivo original não é alterado. Retorna os caminhos gerados.
+    """
+    pasta.mkdir(parents=True, exist_ok=True)
+    por_arquivo: dict[str, list[Any]] = {}
+    for dataset in sessao.listar_datasets():
+        if dataset.origem == "importado":
+            por_arquivo.setdefault(dataset.arquivo, []).append(dataset)
+    gerados = []
+    for arquivo, datasets in por_arquivo.items():
+        if not any(_dataset_foi_alterado(d) for d in datasets):
+            continue
+        caminho = pasta / f"{Path(arquivo).stem}{sufixo}.xlsx"
+        with pd.ExcelWriter(caminho, engine="xlsxwriter") as writer:
+            construtor = _ConstrutorRelatorio(writer)
+            for dataset in datasets:
+                construtor.escrever_dataframe(str(dataset.aba) if dataset.aba else Path(arquivo).stem, dataset.df)
+        logger.info("Cópia com o resultado final gerada em: %s", caminho)
+        gerados.append(caminho)
+    return gerados
+
+
 def gerar_relatorio(sessao: Sessao, caminho_saida: Path, completo: bool = False) -> Path:
     """Gera o relatório em Excel e retorna o caminho final.
 
