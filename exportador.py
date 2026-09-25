@@ -213,6 +213,16 @@ def _montar_historico(sessao: Sessao) -> pd.DataFrame:
     return pd.DataFrame([entrada.como_linha() for entrada in sessao.historico])
 
 
+def _nome_base_dataset(dataset: Any) -> str:
+    """Nome curto que identifica o dataset numa aba: a aba de origem ou, no CSV, o nome do arquivo."""
+    return str(dataset.aba) if dataset.aba else Path(dataset.arquivo).stem
+
+
+def _nome_aba_com_sufixo(nome_base: str, sufixo: str) -> str:
+    """Encurta o nome base para que o sufixo (``_orig``/``_alt``) caiba nos 31 caracteres do Excel."""
+    return f"{nome_base[: 31 - len(sufixo)]}{sufixo}"
+
+
 def gerar_relatorio(sessao: Sessao, caminho_saida: Path) -> Path:
     """Gera o arquivo ``relatorio.xlsx`` com todas as abas exigidas e retorna o caminho final."""
     caminho_saida.parent.mkdir(parents=True, exist_ok=True)
@@ -225,11 +235,14 @@ def gerar_relatorio(sessao: Sessao, caminho_saida: Path) -> Path:
         construtor.escrever_dataframe("Qualidade_Dados", _montar_qualidade_geral(sessao))
         construtor.escrever_dataframe("Historico", _montar_historico(sessao))
 
-        for dataset in sessao.listar_datasets():
-            nome_base = f"{Path(dataset.arquivo).stem}_{dataset.aba}" if dataset.aba else Path(dataset.arquivo).stem
-            construtor.escrever_dataframe(f"{nome_base}_orig", dataset.df_original)
+        datasets = sessao.listar_datasets()
+        bases = [_nome_base_dataset(d) for d in datasets]
+        for dataset, nome_base in zip(datasets, bases):
+            if bases.count(nome_base) > 1:
+                nome_base = f"{dataset.id}_{nome_base}"
+            construtor.escrever_dataframe(_nome_aba_com_sufixo(nome_base, "_orig"), dataset.df_original)
             if not dataset.df.equals(dataset.df_original):
-                construtor.escrever_dataframe(f"{nome_base}_alt", dataset.df)
+                construtor.escrever_dataframe(_nome_aba_com_sufixo(nome_base, "_alt"), dataset.df)
 
         for nome_resultado, df_resultado in sessao.resultados.items():
             construtor.escrever_dataframe(nome_resultado, df_resultado)

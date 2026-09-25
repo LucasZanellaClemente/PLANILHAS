@@ -16,7 +16,7 @@ from typing import Optional
 
 import pandas as pd
 
-from utils import ErroOperacao
+from utils import ErroOperacao, serie_numeros_br
 
 logger = logging.getLogger(__name__)
 
@@ -131,4 +131,10 @@ def carregar_csv(
             caminho.name,
             delimitador_usado,
         )
+    # Colunas com números no formato brasileiro (1.234,56 / 10,50) chegam como texto.
+    for coluna in df.columns:
+        if df[coluna].dtype == object:
+            convertida = serie_numeros_br(df[coluna])
+            if convertida is not None:
+                df[coluna] = convertida
     return df, delimitador_usado, codificacao_usada
